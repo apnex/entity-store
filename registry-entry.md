@@ -27,22 +27,23 @@ Keep typed, tagged entities in a single order of changes that every read can be 
 What a consumer can depend on, one capability per row.\
 A capability is named for what it offers, not for who offers it, so two components that provide the same capability share its name, and the overlap is visible.\
 **Provides** means this component implements the capability; **carries from X** means it passes X's capability through its own interface.\
+**Requires** names the capabilities of other components a row depends on, as `component:capability`, so a census can follow an application's demand down through the components it reaches.\
 The trait column names any trait a system takes on by using the capability.
 
-| Capability | Relation | What a consumer can depend on | Trait |
-|---|---|---|---|
-| `declared-shape-validation` | provides | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
-| `positioned-entity-write` | provides | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
-| `change-provenance` | provides | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
-| `expected-revision-write` | provides | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
-| `repeat-recognition` | provides | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer. | T1 when storage is durable |
-| `identity-name-lookup` | provides | Read one entity by identity or by name, with the position the answer reflects. | none |
-| `find-by-kind-tags` | provides | Find every entity matching a kind and any set of tags, with the position the answer reflects. | none |
-| `changes-since-position` | provides | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
-| `follow-narrowed-set` | provides | Changes since a position, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the set; a reader may wait for the next change. | none |
-| `stated-history-bound` | provides | History is kept to a bound the application states, and a reader behind it is told so. | none |
-| `storage-port` | provides | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
-| `actionable-refusal` | provides | A refusal says what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
+| Capability | Relation | Requires | What a consumer can depend on | Trait |
+|---|---|---|---|---|
+| `declared-shape-validation` | provides | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
+| `positioned-entity-write` | provides | none | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
+| `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
+| `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
+| `repeat-recognition` | provides | none | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer. | T1 when storage is durable |
+| `identity-name-lookup` | provides | none | Read one entity by identity or by name, with the position the answer reflects. | none |
+| `find-by-kind-tags` | provides | none | Find every entity matching a kind and any set of tags, with the position the answer reflects. | none |
+| `changes-since-position` | provides | none | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
+| `follow-narrowed-set` | provides | none | Changes since a position, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the set; a reader may wait for the next change. | none |
+| `stated-history-bound` | provides | none | History is kept to a bound the application states, and a reader behind it is told so. | none |
+| `storage-port` | provides | none | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
+| `actionable-refusal` | provides | none | A refusal says what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
 
 **Traits.**\
 A system that contains entitystore and writes to durable storage owns persistent state something else relies on, so it is stateful (`T1`) and `A1` binds it.\
