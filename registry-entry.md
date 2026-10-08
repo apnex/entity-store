@@ -32,7 +32,7 @@ The trait column names any trait a system takes on by using the capability.
 
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
-| `declared-shape-validation` | provides | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
+| `declared-shape-validation` | carries from shapecheck | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
 | `positioned-entity-write` | provides | none | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
 | `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
 | `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
@@ -104,8 +104,11 @@ Kinds and storage are supplied through declared seams, so a new kind or a new st
 
 **Composes:** nothing registered.
 
-**Consumes, through a declared contract:** nothing.\
-It never reaches the network; kinds and storage are supplied by the embedding application, not by another component.
+**Consumes, through a declared contract:**
+
+- `shapecheck`: `declared-shape-validation`
+
+It never reaches the network.
 
 **Composed-by:** nothing yet.\
 entityapi's host half consumes it once built.
