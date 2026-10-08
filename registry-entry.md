@@ -24,26 +24,30 @@ Keep typed, tagged entities in a single order of changes that every read can be 
 
 ## Contract
 
-What a consumer can depend on.\
-Each row is one feature; the census counts rows, and the trait column names any trait a system takes on by using the feature.
+What a consumer can depend on, one capability per row.\
+A capability is named for what it offers, not for who offers it, so two components that provide the same capability share its name, and the overlap is visible.\
+**Provides** means this component implements the capability; **carries from X** means it passes X's capability through its own interface.\
+The trait column names any trait a system takes on by using the capability.
 
-| Feature | What a consumer can depend on | Trait |
-|---|---|---|
-| `entitystore.kinds` | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
-| `entitystore.write` | Create, update and delete an entity; each change takes exactly one position, and records when it was made and the writer the application names. | T1 when storage is durable |
-| `entitystore.conditional-write` | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
-| `entitystore.repeat` | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer. | T1 when storage is durable |
-| `entitystore.get` | Read one entity by identity or by name, with the position the answer reflects. | none |
-| `entitystore.find` | Find every entity matching a kind and any set of tags, with the position the answer reflects. | none |
-| `entitystore.since` | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
-| `entitystore.follow` | The same, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the narrowed set; a reader may wait for the next change. | none |
-| `entitystore.history-bound` | History is kept to a bound the application states, and a reader behind it is told so. | none |
-| `entitystore.storage` | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
+| Capability | Relation | What a consumer can depend on | Trait |
+|---|---|---|---|
+| `declared-shape-validation` | provides | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
+| `positioned-entity-write` | provides | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
+| `change-provenance` | provides | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
+| `expected-revision-write` | provides | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
+| `repeat-recognition` | provides | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer. | T1 when storage is durable |
+| `identity-name-lookup` | provides | Read one entity by identity or by name, with the position the answer reflects. | none |
+| `find-by-kind-tags` | provides | Find every entity matching a kind and any set of tags, with the position the answer reflects. | none |
+| `changes-since-position` | provides | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
+| `follow-narrowed-set` | provides | Changes since a position, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the set; a reader may wait for the next change. | none |
+| `stated-history-bound` | provides | History is kept to a bound the application states, and a reader behind it is told so. | none |
+| `storage-port` | provides | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
+| `actionable-refusal` | provides | A refusal says what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
 
 **Traits.**\
 A system that contains entitystore and writes to durable storage owns persistent state something else relies on, so it is stateful (`T1`) and `A1` binds it.\
 Used only in memory, as a cache that can be dropped without changing any decision, it brings no trait.\
-When independent actors write the same store, the system holding it is also multi-agent (`T3`); that follows from how the store is shared, not from any one feature.
+When independent actors write the same store, the system holding it is also multi-agent (`T3`); that follows from how the store is shared, not from any one capability.
 
 ---
 
@@ -100,7 +104,7 @@ Kinds and storage are supplied through declared seams, so a new kind or a new st
 **Composes:** nothing registered.
 
 **Consumes, through a declared contract:** nothing.\
-It never reaches the network.
+It never reaches the network; kinds and storage are supplied by the embedding application, not by another component.
 
 **Composed-by:** nothing yet.\
 entityapi's host half consumes it once built.
