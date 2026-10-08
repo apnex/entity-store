@@ -16,16 +16,19 @@ A change of direction is recorded as a decision first and absorbed here afterwar
 
 Five terms in that sentence carry weight, so this document defines them rather than leaving them to the reader.
 
-**Entity** means a small, structured record with an identity, a name, a kind, tags, and a body whose shape its kind declares.
+**Entity** means a small, structured record with an identity, a name, a kind, tags, and a body whose shape its kind declares.\
+Each change to it records when it was made and the writer the application names.
 
 **Find** means a reader asks by identity, by name, or by kind and any set of tags, and gets every entity that matches, with the position the answer reflects.
 
 **One place in one order** means the store keeps a single order of changes.\
-Each change takes exactly one position, a write repeated under the same identity included, and positions never move or repeat.
+Each change takes exactly one position, and positions never move or repeat.\
+A write carries an identity its writer supplies; a write repeated under that identity is recognised, takes no second position, and returns the first answer.
 
 **How current its view is** means every read reports the position it reflects.
 
-**What changed since** means every later change from any position still held, once and in order, or a plain statement that the position is no longer held.
+**What changed since** means every later change from any position still held, once and in order, or a plain statement that the position is no longer held.\
+A reader may narrow it by kind and tags, and is then told of each entity that enters, changes within, or leaves the narrowed set.
 
 ---
 
@@ -46,7 +49,7 @@ entitystore puts order, currency, and repeat recognition in from the first write
 
 An embeddable library that keeps entities of the kinds an application gives it.\
 It refuses any write that does not fit its kind, or that would overwrite a change its author never saw.\
-It answers reads by identity, by name, by kind and tags, and since a position.
+It answers reads by identity, by name, by kind and tags, and since a position, narrowed or whole.
 
 It is embedded by an application that owns its own process, configuration, and storage.
 
@@ -59,8 +62,8 @@ It never listens and never sends.\
 Reaching it from elsewhere is someone else's job.
 
 **Not a notifier.**\
-It never pushes to anyone.\
-It hands changes to readers that ask, including a reader that waits for the next one.
+It never sends to anyone who has not asked.\
+A reader may ask and wait for the next change; that is still a reader asking.
 
 **Not a keeper of readers.**\
 It holds no record of who reads or how far they have got.\
@@ -78,7 +81,7 @@ Entities are small.\
 Content too large to be a record lives elsewhere and is referenced.
 
 **Not an archive.**\
-History is kept so readers can catch up, to a stated bound.\
+History is kept so readers can catch up, to a bound the embedding application states.\
 A reader behind that bound is told so, never handed a partial history.
 
 **Not the owner of meaning.**\
@@ -86,7 +89,8 @@ It knows the shape each kind declares, never what a kind means.\
 No kind is built in.
 
 **Not an authority.**\
-It does not decide who may write; the application decides before it calls.
+It does not decide who may write; the application decides before it calls.\
+It records the writer the application names, and never checks it.
 
 ---
 
