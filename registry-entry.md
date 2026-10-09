@@ -55,7 +55,7 @@ When independent actors write the same store, the system holding it is also mult
 ## Reference
 
 Not yet built.\
-Vision: `entitystore/VISION.md` in the zorg repository, which will hold the implementation until the component earns a repository of its own.
+This repository, `apnex/entitystore`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
