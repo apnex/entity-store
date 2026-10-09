@@ -43,7 +43,7 @@ The trait column names any trait a system takes on by using the capability.
 | `follow-narrowed-set` | provides | none | Changes since a position, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the set; a reader may wait for the next change. | none |
 | `stated-history-bound` | provides | none | History is kept to a bound the application states, and a reader behind it is told so. | none |
 | `storage-port` | provides | none | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
-| `actionable-refusal` | provides | none | A refusal says what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
+| `store-refusal` | provides | none | A refusal of a write or read says, in the shared refusal form, what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
 
 **Traits.**\
 A system that contains entitystore and writes to durable storage owns persistent state something else relies on, so it is stateful (`T1`) and `A1` binds it.\
