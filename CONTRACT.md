@@ -112,6 +112,6 @@ Kinds and storage are supplied through declared seams, so a new kind or a new st
 It never reaches the network.
 
 **Composed-by:** nothing yet.\
-entityapi's host half consumes it once built.
+Its first consumer, once built, is entityapi's host half.
 
 The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in opcall's entry.
