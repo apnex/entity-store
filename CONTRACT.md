@@ -1,7 +1,7 @@
 ---
 id: unminted
 category: component
-title: entitystore - typed, tagged entities in one order of changes
+title: entity-store - typed, tagged entities in one order of changes
 status: draft
 hydrate-when: Several parties share small typed records, and each must know how current its view is and what changed since it last looked
 sovereignty: internal
@@ -9,9 +9,9 @@ supersedes: []
 related: [C0, A1, A3, T1]
 ---
 
-# entitystore
+# entity-store
 
-The contract of record for entitystore: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
+The contract of record for entity-store: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
 It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
 The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
 
@@ -33,7 +33,7 @@ The trait column names any trait a system takes on by using the capability.
 
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
-| `declared-shape-validation` | carries from shapecheck | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
+| `declared-shape-validation` | carries from shape-check | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
 | `positioned-entity-write` | provides | none | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
 | `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
 | `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
@@ -47,7 +47,7 @@ The trait column names any trait a system takes on by using the capability.
 | `store-refusal` | provides | none | A refusal of a write or read says, in the shared refusal form, what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
 
 **Traits.**\
-A system that contains entitystore and writes to durable storage owns persistent state something else relies on, so it is stateful (`T1`) and `A1` binds it.\
+A system that contains entity-store and writes to durable storage owns persistent state something else relies on, so it is stateful (`T1`) and `A1` binds it.\
 Used only in memory, as a cache that can be dropped without changing any decision, it brings no trait.\
 When independent actors write the same store, the system holding it is also multi-agent (`T3`); that follows from how the store is shared, not from any one capability.
 
@@ -56,7 +56,7 @@ When independent actors write the same store, the system holding it is also mult
 ## Reference
 
 Not yet built.\
-This repository, `apnex/entitystore`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/entity-store`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
@@ -76,9 +76,9 @@ This repository, `apnex/entitystore`, private until its first working code: `VIS
 
 **It is the wrong tool when**
 
-| You need | Reach elsewhere, because entitystore is |
+| You need | Reach elsewhere, because entity-store is |
 |---|---|
-| access from another process or machine | not a network service; see entityapi |
+| access from another process or machine | not a network service; see entity-api |
 | changes pushed to parties that did not ask | not a notifier |
 | a record of who reads and how far they got | not a keeper of readers |
 | relationships, joins or traversal | not a graph |
@@ -94,10 +94,10 @@ This repository, `apnex/entitystore`, private until its first working code: `VIS
 Internal and sovereign, so a fit gap has somewhere to go.
 
 1. Record a measured gap where both sides can see it.
-2. Resolve it by adjusting entitystore, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
+2. Resolve it by adjusting entity-store, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
 3. Never fork.
 
-Kinds and storage are supplied through declared seams, so a new kind or a new storage medium needs no change to entitystore.
+Kinds and storage are supplied through declared seams, so a new kind or a new storage medium needs no change to entity-store.
 
 ---
 
@@ -107,11 +107,11 @@ Kinds and storage are supplied through declared seams, so a new kind or a new st
 
 **Consumes, through a declared contract:**
 
-- `shapecheck`: `declared-shape-validation`
+- `shape-check`: `declared-shape-validation`
 
 It never reaches the network.
 
 **Composed-by:** nothing yet.\
-Its first consumer, once built, is entityapi's host half.
+Its first consumer, once built, is entity-api's host half.
 
-The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in opcall's entry.
+The registry's edge vocabulary has no edge for one component using another's contract without containing it; see the note in operation-call's entry.

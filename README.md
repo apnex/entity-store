@@ -1,4 +1,4 @@
-# entitystore
+# entity-store
 
 Keep typed, tagged entities in a single order of changes that every read can be dated against.
 

@@ -1,7 +1,7 @@
-# entitystore - Vision
+# entity-store - Vision
 
 **Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
-This document states why entitystore exists and what it will never be.\
+This document states why entity-store exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
 Holding this document authorises nothing.\
@@ -42,7 +42,7 @@ What gets built late, and expensively, is the answer to "what changed since I la
 An agent acting on a view it cannot date is acting on a guess.\
 One that repeats a write after a lost answer needs the store to recognise the repeat, not apply it twice.
 
-entitystore puts order, currency, and repeat recognition in from the first write.
+entity-store puts order, currency, and repeat recognition in from the first write.
 
 ---
 
