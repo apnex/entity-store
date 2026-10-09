@@ -23,7 +23,8 @@ Each change to it records when it was made and the writer the application names.
 
 **One place in one order** means the store keeps a single order of changes.\
 Each change takes exactly one position, and positions never move or repeat.\
-A write carries an identity its writer supplies; a write repeated under that identity is recognised, takes no second position, and returns the first answer.
+A write carries an identity its writer supplies; a write repeated under that identity is recognised, takes no second position, and returns the first answer.\
+A repeat is recognised for as long as the change it repeats is within the history bound; a retry after that is a new write.
 
 **How current its view is** means every read reports the position it reflects.
 
@@ -81,7 +82,7 @@ Entities are small.\
 Content too large to be a record lives elsewhere and is referenced.
 
 **Not an archive.**\
-History is kept so readers can catch up, to a bound the embedding application states.\
+History is kept so readers can catch up, to a bound the embedding application states and any reader can read.\
 A reader behind that bound is told so, never handed a partial history.
 
 **Not the owner of meaning.**\
