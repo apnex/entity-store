@@ -7,7 +7,7 @@
  * create or update makes its entity the entity's state, a delete removes the entity and frees its name,
  * each change makes its write identity name it, and every time advances the store's time (EM8).
  */
-import { compareCodePoints, isJsonObject, type JsonValue } from "./json-value.js";
+import { compareCodePoints, copyJson, isJsonObject, type JsonValue } from "./json-value.js";
 import type { ChangeRecord, EntityEnvelope, LoadedRecord, WriteAnswer } from "./store-types.js";
 
 /** What the store remembers of the latest change made under a write identity (EM7). */
@@ -183,7 +183,7 @@ export function recoverLog(records: readonly LoadedRecord[]): { ok: true; state:
 		const checked = record as { type: string; at: string };
 		const atMs = parseTime(checked.at) as number;
 		if (checked.type === "time") state.latestAt = Math.max(state.latestAt, atMs);
-		else state.apply(JSON.parse(JSON.stringify(record)) as ChangeRecord, atMs);
+		else state.apply(copyJson(record as JsonValue) as unknown as ChangeRecord, atMs);
 	}
 	return { ok: true, state };
 }

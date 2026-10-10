@@ -97,20 +97,41 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 };
 
 /** Copies a details value, cutting every string to 128 code points, and reports whether any was cut. */
+// The walk keeps its own stack, so details of any depth are copied without recursion.
 function cutStrings(value: JsonValue, cut: { truncated: boolean }): JsonValue {
-	if (typeof value === "string") {
-		const result = cutTo128(value);
-		if (result.truncated) cut.truncated = true;
-		return result.text;
+	const copyOne = (item: JsonValue): JsonValue => {
+		if (typeof item === "string") {
+			const result = cutTo128(item);
+			if (result.truncated) cut.truncated = true;
+			return result.text;
+		}
+		if (Array.isArray(item)) return new Array<JsonValue>(item.length);
+		if (item !== null && typeof item === "object") return {};
+		return item;
+	};
+	const root = copyOne(value);
+	const stack: { from: JsonValue[] | JsonObject; to: JsonValue[] | JsonObject }[] = [];
+	if (root !== null && typeof root === "object") stack.push({ from: value as JsonValue[] | JsonObject, to: root });
+	while (stack.length > 0) {
+		const { from, to } = stack.pop() as { from: JsonValue[] | JsonObject; to: JsonValue[] | JsonObject };
+		if (Array.isArray(from)) {
+			// As Array.prototype.map did, a hole stays a hole.
+			for (let i = 0; i < from.length; i++) {
+				if (!(i in from)) continue;
+				const made = copyOne(from[i] as JsonValue);
+				(to as JsonValue[])[i] = made;
+				if (made !== null && typeof made === "object") stack.push({ from: from[i] as JsonValue[] | JsonObject, to: made });
+			}
+			continue;
+		}
+		for (const [name, member] of Object.entries(from)) {
+			const made = copyOne(member);
+			// defineProperty, so a member named __proto__ is copied as a member and never sets a prototype.
+			Object.defineProperty(to, name, { value: made, enumerable: true, writable: true, configurable: true });
+			if (made !== null && typeof made === "object") stack.push({ from: member as JsonValue[] | JsonObject, to: made });
+		}
 	}
-	if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut));
-	if (value !== null && typeof value === "object") {
-		const out: JsonObject = {};
-		// defineProperty, so a member named __proto__ is copied as a member and never sets a prototype.
-		for (const [name, member] of Object.entries(value)) Object.defineProperty(out, name, { value: cutStrings(member, cut), enumerable: true, writable: true, configurable: true });
-		return out;
-	}
-	return value;
+	return root;
 }
 
 /**

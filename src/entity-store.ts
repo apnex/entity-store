@@ -96,15 +96,21 @@ export function openEntityStore(options: StoreOptions): StoreOpening {
 	for (const [kind] of entries) {
 		if (!NAME_PATTERN.test(kind)) return refuse("invalid-kind-name", "A kind's name does not match ^[a-z0-9][a-z0-9-]{0,62}$.", { kind: cutTo128(kind).text });
 	}
+	// A kind shape that is not a JSON value - one holding a cycle included - is the application's
+	// programming error, not a refusal (EM10). Depth is measured before shape-check prepares a shape, so
+	// shape-check, whose walk follows the shape, never meets one deeper than 20 levels.
+	for (const [kind, shape] of entries) {
+		if (!isJson(shape)) throw new TypeError(`the body shape of kind ${JSON.stringify(cutTo128(kind).text)} is not a JSON value`);
+	}
+	for (const [kind, shape] of entries) {
+		const depth = nestingDepth(shape as JsonValue);
+		if (depth > LIMITS.shapeDepth) return refuse("shape-too-deep", "A kind's body shape nests more than 20 levels.", { kind, depth, limit: LIMITS.shapeDepth });
+	}
 	const prepared = new Map<string, PreparedShape>();
 	for (const [kind, shape] of entries) {
 		const document = prepareShapeDocument(shape);
 		if (!document.accepted) return refuse("shape-refused", "shape-check refuses a kind's body shape.", { kind, problems: document.problems.map((p) => ({ ...p })) });
 		prepared.set(kind, document);
-	}
-	for (const [kind, shape] of entries) {
-		const depth = nestingDepth(shape as JsonValue);
-		if (depth > LIMITS.shapeDepth) return refuse("shape-too-deep", "A kind's body shape nests more than 20 levels.", { kind, depth, limit: LIMITS.shapeDepth });
 	}
 	for (const [kind, shape] of entries) {
 		const unsafe = firstUnsafeInteger(shape as JsonValue);

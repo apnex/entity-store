@@ -56,6 +56,60 @@ test("local: unsafe-number comes after misfit, entity-too-large and entity-too-d
 	assert.equal(store.create(any("c", deep), write()).refusal.code, "entity-too-deep");
 });
 
+// A body nesting `levels` arrays around 0, built from JSON text as a caller would parse it: 4000 levels is
+// an ordinary value of 8001 bytes that fits EM10's input shape, far deeper than the 27-level envelope.
+const deepArrays = (levels) => JSON.parse(`${"[".repeat(levels)}0${"]".repeat(levels)}`);
+const REFUSAL_FIELDS = ["code", "details", "fix", "part", "what", "why"];
+const assertRefused = (outcome, code, details, message) => {
+	assert.equal(outcome.outcome, "refused", message);
+	assert.deepEqual(Object.keys(outcome.refusal).sort(), REFUSAL_FIELDS, message);
+	assert.deepEqual([outcome.refusal.part, outcome.refusal.code, outcome.refusal.details], ["entity-store", code, details], message);
+};
+// A store holding one entity, and what it holds: its records and every read and find a refusal must leave as they were.
+const heldState = (store, storage) => ({ records: storage.records(), bound: store.historyBound().answer, any: store.find({ kind: "any" }).answer, first: store.read({ target: { id: "e1.1" } }).answer });
+
+test("local: a fresh write of a fitting body nesting 4000 arrays is refused as entity-too-deep, depth 4001 and limit 27, and changes nothing", () => {
+	const { store, storage } = openLocal();
+	assert.equal(store.create(any("held", { a: 1 }), write()).outcome, "answered");
+	const before = heldState(store, storage);
+	assertRefused(store.create(any("deep", deepArrays(4000)), write()), "entity-too-deep", { depth: 4001, limit: 27 }, "a create under a fresh identity");
+	assert.deepEqual(heldState(store, storage), before, "no append, no position, the held entity unchanged");
+	const objects = JSON.parse(`${'{"k":'.repeat(4000)}0${"}".repeat(4000)}`);
+	assertRefused(store.create(any("deep-objects", objects), write()), "entity-too-deep", { depth: 4001, limit: 27 }, "4000 nested objects alike");
+	assert.deepEqual(heldState(store, storage), before);
+});
+
+test("local: a new identity naming an unknown kind with a body nesting 4000 arrays is refused as unknown-kind, which comes first, and changes nothing", () => {
+	const { store, storage } = openLocal();
+	assert.equal(store.create(any("held", { a: 1 }), write()).outcome, "answered");
+	const before = heldState(store, storage);
+	assertRefused(store.create({ kind: "missing", name: "deep", tags: [], body: deepArrays(4000) }, write()), "unknown-kind", { kind: "missing" }, "an unknown kind");
+	assertRefused(store.update({ target: { kind: "missing", name: "held" }, body: deepArrays(4000) }, write()), "unknown-kind", { kind: "missing" }, "an update naming an unknown kind");
+	assert.deepEqual(heldState(store, storage), before, "no append, no position, the held entity unchanged");
+});
+
+test("local: an update whose resulting envelope nests 4000 arrays deep is refused as entity-too-deep, replacing or merging, and changes nothing", () => {
+	const { store, storage } = openLocal();
+	assert.equal(store.create(any("held", { a: 1 }), write()).outcome, "answered");
+	const before = heldState(store, storage);
+	assertRefused(store.update({ target: { id: "e1.1" }, body: deepArrays(4000) }, write()), "entity-too-deep", { depth: 4001, limit: 27 }, "a body replaced by 4000 arrays");
+	assertRefused(store.update({ target: { id: "e1.1" }, body: { m: deepArrays(4000) } }, write()), "entity-too-deep", { depth: 4002, limit: 27 }, "a merge adding 4000 arrays under an object body");
+	assert.deepEqual(heldState(store, storage), before, "no append, no position, the held entity unchanged");
+});
+
+test("local: a body both too large and nesting 4000 arrays deep is refused as entity-too-large, the earlier row of EM9, and changes nothing", () => {
+	const { store, storage } = openLocal({ maxEntityBytes: 1000 });
+	assert.equal(store.create(any("held", { a: 1 }), write()).outcome, "answered");
+	const before = heldState(store, storage);
+	const body = deepArrays(4000);
+	const stamp = { at: new Date(T0).toISOString(), position: 2, writer: "alice" };
+	// The envelope's canonical JSON: its names in code-point order, and no member here needs reordering within.
+	const bytes = Buffer.byteLength(JSON.stringify({ body, changed: stamp, created: stamp, id: "e2.1", kind: "any", name: "big", revision: 1, tags: [] }));
+	assert.ok(bytes > 1000 && bytes > 8001);
+	assertRefused(store.create(any("big", body), write()), "entity-too-large", { bytes, limit: 1000 }, "too large and too deep at once");
+	assert.deepEqual(heldState(store, storage), before, "no append, no position, the held entity unchanged");
+});
+
 const open = (overrides) => openEntityStore({ storage: createMemoryStoragePort(), clock: { now: () => T0 }, historyMs: 60_000, maxEntityBytes: 65_536, kinds: KINDS, ...overrides });
 const refusedAs = (overrides, code, message) => {
 	const opening = open(overrides);
@@ -100,6 +154,24 @@ test("local: a kind shape of 20 levels opens and one of 21 is refused as shape-t
 	assert.equal(refusal.details.depth, 21);
 });
 
+test("local: a kind shape thousands of levels deep is refused as shape-too-deep before shape-check prepares it", () => {
+	const items = refusedAs({ kinds: { k: nestItems(5000) } }, "shape-too-deep", "a 5000-level items chain");
+	assert.deepEqual([items.details.depth, items.details.limit], [5000, 20]);
+	let member = 0;
+	for (let i = 0; i < 5000; i++) member = [member];
+	let other = 1;
+	for (let i = 0; i < 5000; i++) other = [other];
+	const enumDeep = refusedAs({ kinds: { k: { $schema: SHAPE_DIALECT_ID, enum: [member, other] } } }, "shape-too-deep", "an enum of two 5000-level members");
+	assert.deepEqual([enumDeep.details.depth, enumDeep.details.limit], [5002, 20]);
+});
+
+test("local: a kind shape that is not a JSON value, a cyclic one included, is a programming error: opening throws a TypeError", () => {
+	const cyclic = { $schema: SHAPE_DIALECT_ID, properties: {} };
+	cyclic.properties.self = cyclic;
+	assert.throws(() => open({ kinds: { k: cyclic } }), TypeError);
+	assert.throws(() => open({ kinds: { k: { $schema: SHAPE_DIALECT_ID, const: undefined } } }), TypeError);
+});
+
 test("local: a kind shape whose const or enum holds an integer beyond the safe range is refused as unsafe-shape", () => {
 	assert.equal(open({ kinds: { k: { $schema: SHAPE_DIALECT_ID, const: 9007199254740991 } } }).opened, true);
 	refusedAs({ kinds: { k: { $schema: SHAPE_DIALECT_ID, const: UNSAFE } } }, "unsafe-shape", "const");
@@ -125,7 +197,8 @@ test("local: opening reasons are checked in EM10's order", () => {
 	refusedAs({ historyMs: 0, maxEntityBytes: 0 }, "invalid-bound", "bound before size");
 	refusedAs({ maxEntityBytes: 0, kinds: { Bad: {} } }, "invalid-size", "size before kind name");
 	refusedAs({ kinds: { ok: { $schema: "urn:x" }, Bad: {} } }, "invalid-kind-name", "kind name before shape, whichever kind comes first");
-	refusedAs({ kinds: { a: deep, b: { $schema: "urn:x" } } }, "shape-refused", "refused shape before depth");
+	refusedAs({ kinds: { a: { $schema: "urn:x" }, b: deep } }, "shape-too-deep", "depth before a refused shape");
+	refusedAs({ kinds: { a: { $schema: "urn:x" }, b: unsafe } }, "shape-refused", "a refused shape before unsafe integers");
 	refusedAs({ kinds: { a: unsafe, b: deep } }, "shape-too-deep", "depth before unsafe integers");
 	refusedAs({ kinds: { a: large, b: unsafe } }, "unsafe-shape", "unsafe integers before size");
 });

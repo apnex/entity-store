@@ -96,6 +96,27 @@ test("local: an input that does not fit its shape - one carrying a writer includ
 	assert.deepEqual([reused.outcome, reused.refusal.code], ["refused", "identity-reused"], "and refused as identity-reused before its name is judged");
 });
 
+test("local: a fitting body nesting 4000 arrays under a retained identity is refused as identity-reused, which comes before entity-too-deep, and changes nothing", () => {
+	const { store, storage } = openLocal({ historyMs: 1000 });
+	const write = { writer: "alice", writeId: "w1" };
+	const input = { kind: "any", name: "a", tags: [], body: 0 };
+	const first = store.create(input, write);
+	assert.equal(first.outcome, "answered");
+	const records = storage.records();
+	const deep = { ...input, body: JSON.parse(`${"[".repeat(4000)}0${"]".repeat(4000)}`) };
+	for (const [outcome, how] of [[store.create(deep, write), "a create"], [store.update({ target: { id: "e1.1" }, body: deep.body }, write), "an update"]]) {
+		assert.equal(outcome.outcome, "refused", how);
+		assert.deepEqual(Object.keys(outcome.refusal).sort(), ["code", "details", "fix", "part", "what", "why"], how);
+		assert.deepEqual([outcome.refusal.part, outcome.refusal.code, outcome.refusal.details], ["entity-store", "identity-reused", { writeId: "w1" }], how);
+	}
+	const check = store.checkRepeat("create", deep, write);
+	assert.deepEqual([check.repeat, check.refusal.details], ["identity-reused", { writeId: "w1" }], "the repeat check says the same");
+	assert.deepEqual(storage.records(), records, "nothing was appended: the store's time is the logged time, so the decision needed no time record");
+	assert.equal(store.historyBound().answer.position, 1, "no position was taken");
+	assert.deepEqual(store.read({ target: { id: "e1.1" } }).answer.entity, first.answer.entity, "the entity is unchanged");
+	assert.deepEqual(store.create(input, write), first, "the first input is still recognised");
+});
+
 test("file port, process killed: changes at 1000 and 1900 with a bound of 1000, a repeat of the second at 2000, the process killed, the clock set back to 1900 and the store reopened, and a repeat of the first runs afresh", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "entity-store-schedule-"));
 	try {
