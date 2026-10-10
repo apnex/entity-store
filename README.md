@@ -2,7 +2,7 @@
 
 Keep typed, tagged entities in a single order of changes that every read can be dated against.
 
-**Status: built, awaiting certification of zorg's Delta 1, stage 2.**\
+**Status: built, and certified at zorg's Delta 1, stage 2, at `49ba930`.**\
 Its contract tests run its shared contract suite against a store in this process, over memory and over a change log file, and recover a store from a process killed with `SIGKILL`.
 
 - `VISION.md` - why it exists, and what it will never be.
