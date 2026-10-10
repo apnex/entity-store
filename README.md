@@ -10,3 +10,12 @@ Its contract tests run its shared contract suite against a store in this process
 - `docs/DECISIONS.md` - the rulings about this component.
 
 It belongs to a component set first composed by zorg (`apnex/zorg`), and is private until its first working code.
+
+It depends on `@apnex/shape-check` through a `file:` link to a checkout beside it, which must be built first, since shape-check's `dist/` is not committed.
+
+To run the tests from clean checkouts:
+```sh
+(cd ../shape-check && npm install && npm run build)
+npm install
+npm test
+```

@@ -44,6 +44,18 @@ test("file port: an absent log is created with its header, and each record is on
 	assert.ok(fs.readFileSync(file, "utf8").endsWith("\n"));
 }));
 
+test("file port: an empty file, or one holding a beginning of the header and no newline, holds no record and is given its header", () => withLog((file) => {
+	for (const start of ["", HEADER.slice(0, 1), HEADER.slice(0, 12), HEADER]) {
+		fs.writeFileSync(file, start);
+		assert.equal(openFile(file).opened, true, `a file holding ${JSON.stringify(start)} opens`);
+		assert.equal(fs.readFileSync(file, "utf8"), `${HEADER}\n`, `a file holding ${JSON.stringify(start)} is given its header`);
+	}
+	fs.writeFileSync(file, '{"log":"other"');
+	const refused = openFile(file);
+	assert.equal(refused.opened, false, "a file holding something other than a beginning of the header is not given one");
+	assert.equal(refused.refusal.code, "log-corrupt");
+}));
+
 test("file port: an append is one synchronous write followed by fdatasync, both done before the store answers", () => withLog((file) => {
 	const { store } = openLocal({ storage: createFileStoragePort(file) });
 	const calls = [];
