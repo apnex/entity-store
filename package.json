@@ -19,6 +19,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./file-storage": {
+      "types": "./dist/file-storage-adapter.d.ts",
+      "default": "./dist/file-storage-adapter.js"
+    },
+    "./contract-suite": {
+      "types": "./dist/contract-suite.d.ts",
+      "default": "./dist/contract-suite.js"
     }
   },
   "files": [
@@ -28,6 +36,9 @@
     "build": "tsc -p .",
     "test": "npm run build && node --test \"test/**/*.test.js\"",
     "docs:check": "tools/check-docs.sh"
+  },
+  "dependencies": {
+    "@apnex/shape-check": "file:../shape-check"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

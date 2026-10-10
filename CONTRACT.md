@@ -55,8 +55,10 @@ When independent actors write the same store, the system holding it is also mult
 
 ## Reference
 
-Not yet built.\
-This repository, `apnex/entity-store`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/entity-store`, private until its first working code is certified.\
+The package `@apnex/entity-store` exports `openEntityStore` and `createMemoryStoragePort`, `@apnex/entity-store/file-storage` exports `createFileStoragePort` and `LOG_HEADER`, and `@apnex/entity-store/contract-suite` exports `registerEntityStoreSuite` and `contractSuiteRows`, the shared contract suite, as `export-map.json` records.\
+`changes-since-position` and `follow-narrowed-set` are deferred under zorg's `D15`.\
+It depends on `@apnex/shape-check` through a `file:` link, and only its file storage port, `src/file-storage-adapter.ts`, imports a module particular to one runtime.
 
 ---
 
