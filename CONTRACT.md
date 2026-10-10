@@ -34,7 +34,7 @@ The trait column names any trait a system takes on by using the capability.
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
 | `declared-shape-validation` | carries from shape-check | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
-| `positioned-entity-write` | provides | none | Create, update and delete an entity; each change takes exactly one position. | T1 when storage is durable |
+| `positioned-entity-write` | provides | none | Create, update and delete entities; each change - one or more writes, applied all or nothing - takes exactly one position. | T1 when storage is durable |
 | `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
 | `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
 | `repeat-recognition` | provides | none | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer, for as long as the change it repeats is within the history bound. | T1 when storage is durable |
