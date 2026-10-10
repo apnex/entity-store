@@ -54,3 +54,42 @@ export function checkRecovered(assert, store, clock, done, before) {
 	assert.equal(next.answer.position, before.position + 1, "the next change takes the next position");
 	assert.equal(next.answer.entity.id, `e${before.position + 1}.1`);
 }
+
+/** SHA-256 over the canonical JSON of a write's input, operation and writer (EM7), computed here independently. */
+async function digestOf(operation, input, writer) {
+	const { createHash } = await import("node:crypto");
+	const byCodePoint = (a, b) => {
+		const x = Array.from(a, (c) => c.codePointAt(0));
+		const y = Array.from(b, (c) => c.codePointAt(0));
+		for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
+		return x.length - y.length;
+	};
+	const canonical = (v) => Array.isArray(v) ? `[${v.map(canonical).join(",")}]`
+		: v !== null && typeof v === "object" ? `{${Object.keys(v).sort(byCodePoint).map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`
+		: JSON.stringify(v);
+	return createHash("sha256").update(Buffer.from(canonical({ input, operation, writer }), "utf8")).digest("hex");
+}
+
+/**
+ * The memory port's test fixture for a change of two writes (D33): appended to a memory port after the
+ * scenario, it creates `pair-one` and renames the scenario's `beta` to `pair-two`, both at one position.
+ * Its answer is the create's, and its digest is the create input's, so a repeat of `PAIR.input` under
+ * `PAIR.write` is recognised. Resolves with the record and the position it takes.
+ */
+export const PAIR = {
+	op: "create",
+	input: { kind: "note", name: "pair-one", tags: [], body: { pointer: "https://e.x/1", summary: "one" } },
+	write: { writer: "fixture", writeId: "pair" },
+};
+export async function appendTwoWriteChange(storage, store) {
+	const p = store.historyBound().answer.position + 1;
+	const at = new Date(T0 + 80).toISOString();
+	const stamp = { position: p, at, writer: PAIR.write.writer };
+	const one = { id: `e${p}.1`, ...PAIR.input, revision: 1, created: stamp, changed: stamp };
+	const beta = store.find({ kind: "note" }).answer.entries.find((e) => e.name === "beta");
+	const renamed = { ...beta, name: "pair-two", revision: beta.revision + 1, changed: stamp };
+	const record = { type: "change", position: p, at, writer: PAIR.write.writer, writeId: PAIR.write.writeId, digest: await digestOf(PAIR.op, PAIR.input, PAIR.write.writer),
+		answer: { position: p, entity: one }, writes: [{ operation: "create", id: one.id, entity: one }, { operation: "update", id: renamed.id, entity: renamed }] };
+	storage.append(record);
+	return { record, position: p, one, renamed };
+}

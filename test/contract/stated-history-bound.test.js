@@ -3,12 +3,21 @@
 //
 // Runs the shared suite's cases for this row locally - including EM8's schedule with a find as of 0 at
 // 2000, refused before and after a restart with the clock set back, and as of 1 answered - then shows in
-// the change log the time records EM8 makes the store append before each decision about retention.
+// the change log the time records EM8 makes the store append before each decision about retention. The
+// same schedule also runs on the file port in a child process that is really killed, and the store is
+// reopened with the clock set back.
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { registerEntityStoreSuite } from "@apnex/entity-store/contract-suite";
+import { createFileStoragePort } from "@apnex/entity-store/file-storage";
+import { runUntilReadyThenKill } from "../support/child-process.js";
 import { createLocalHarness } from "../support/local-harness.js";
 import { note, openLocal, T0 } from "../support/local-store.js";
+import { SCHEDULE } from "../support/schedule.js";
 
 registerEntityStoreSuite(test, createLocalHarness(), ["stated-history-bound"]);
 
@@ -53,4 +62,31 @@ test("local: the bound is configuration, not stored: the change log holds no bou
 		assert.deepEqual(Object.keys(record).sort(), ["answer", "at", "digest", "position", "type", "writeId", "writer", "writes"], "a change record holds EM15's fields and no bound");
 	}
 	assert.deepEqual(openLocal({ historyMs: 5000, storage }).store.historyBound().answer, { position: 1, historyMs: 5000 });
+});
+
+test("file port, process killed: changes at 1000 and 1900 with a bound of 1000, a find as of 0 at 2000 refused as position-not-held before the kill and after it, the clock set back to 1900, and as of 1 answered", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "entity-store-schedule-"));
+	try {
+		const file = path.join(dir, "changes.log");
+		const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "support", "schedule-child.js");
+		const [first, second, found] = await runUntilReadyThenKill(child, [file, "find"], path.join(dir, "acks"));
+		assert.deepEqual([first.outcome.answer.position, second.outcome.answer.position], [1, 2], "the changes at 1000 and 1900 were acknowledged");
+		assert.equal(found.outcome.outcome, "refused", "the find as of 0 at 2000 was refused before the kill");
+		assert.equal(found.outcome.refusal.code, "position-not-held");
+		assert.deepEqual(found.outcome.refusal.details, { position: 0 });
+		const timeRecords = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.includes('"type":"time"'));
+		assert.deepEqual(timeRecords.map((l) => JSON.parse(l).at), ["1970-01-01T00:00:02.000Z"], "the decision at 2000 reached the change log before the kill");
+
+		const { store, storage } = openLocal({ storage: createFileStoragePort(file), time: 1900, historyMs: SCHEDULE.historyMs });
+		try {
+			const after = store.find({ kind: "note", asOf: 0 });
+			assert.deepEqual([after.outcome, after.refusal?.code, after.refusal?.details], ["refused", "position-not-held", { position: 0 }], "refused after the kill, the store's time being 2000, not the clock's 1900");
+			assert.deepEqual(store.find({ kind: "note", asOf: 1 }), { outcome: "answered", answer: { position: 1, entries: [first.outcome.answer.entity], next: null } }, "as of 1 is answered with the state as of 1");
+			assert.equal(store.historyBound().answer.position, 2);
+		} finally {
+			storage.close();
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

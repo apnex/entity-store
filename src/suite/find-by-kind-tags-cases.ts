@@ -74,6 +74,23 @@ export const findByKindTagsCases: SuiteCase[] = [
 		}),
 	},
 	{
+		name: "a find's tags are not judged: 33 distinct tags match nothing, 33 copies of one held tag match, and a malformed tag matches nothing",
+		run: (h) => withStore(h, {}, async (s) => {
+			const held = Array.from({ length: 32 }, (_, i) => `t:v${i}`);
+			await create(s, note("alpha", held));
+			await create(s, note("beta", ["a:b"]));
+			same(names(await find(s, { kind: "note", tags: held })), ["alpha"], "32 distinct tags, every one held, match");
+			same(await find(s, { kind: "note", tags: [...held, "t:v32"] }), { position: 2, entries: [], next: null }, "33 distinct tags match nothing");
+			same(await find(s, { kind: "note", tags: [...held, "a:b"] }), { position: 2, entries: [], next: null }, "33 distinct tags, each held by some entity, match nothing");
+			same(names(await find(s, { kind: "note", tags: Array.from({ length: 33 }, () => "a:b") })), ["beta"], "33 copies of one held tag are that tag once, and match");
+			same(names(await find(s, { kind: "note", tags: [...held, ...held, "t:v0"] })), ["alpha"], "65 listed tags that are 32 distinct, all held, match");
+			for (const tag of ["Bad:Tag", "a:b:c", "nocolon", "", "-a:b", "a".repeat(64) + ":b"]) {
+				same(await find(s, { kind: "note", tags: [tag] }), { position: 2, entries: [], next: null }, `a malformed tag ${JSON.stringify(tag)} matches nothing and is not refused`);
+				same(await find(s, { kind: "note", tags: ["a:b", tag] }), { position: 2, entries: [], next: null }, `a malformed tag ${JSON.stringify(tag)} beside a held one matches nothing`);
+			}
+		}),
+	},
+	{
 		name: "names are ordered by code point, and a page after a name holds the names after it",
 		run: (h) => withStore(h, {}, async (s) => {
 			for (const n of ["b", "a-1", "a", "a0", "10", "9"]) await create(s, note(n));

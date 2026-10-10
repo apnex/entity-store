@@ -67,6 +67,9 @@ export const LIMITS = Object.freeze({
 	pageBytes: 524288,
 	historyMsMin: 1,
 	historyMsMax: 365 * 24 * 60 * 60 * 1000,
+	/** EM8's clock range: 0000-01-01T00:00:00.000Z to 9999-12-31T23:59:59.999Z, the times written with a four-digit year. */
+	clockMsMin: -62167219200000,
+	clockMsMax: 253402300799999,
 });
 
 type Judge = (body: JsonValue) => readonly ShapeMisfit[];
@@ -154,10 +157,16 @@ class Store implements EntityStore {
 	) {}
 
 	// The store's time: the later of the application's clock and the latest time in the change log (EM8).
+	// The clock's value is floored and checked against EM8's range before it is compared with any logged
+	// time, so a value outside the range throws even when a later logged time would have masked it.
 	#now(): number {
 		const clock = this.clock.now();
 		if (typeof clock !== "number" || !Number.isFinite(clock)) throw new TypeError("the clock port gave a time that is not a finite number");
-		return Math.max(Math.floor(clock), this.state.latestAt);
+		const ms = Math.floor(clock);
+		if (ms < LIMITS.clockMsMin || ms > LIMITS.clockMsMax) {
+			throw new RangeError(`the clock port gave ${ms} ms, outside ${LIMITS.clockMsMin} to ${LIMITS.clockMsMax} (0000-01-01T00:00:00.000Z to 9999-12-31T23:59:59.999Z)`);
+		}
+		return Math.max(ms, this.state.latestAt);
 	}
 
 	#alive(): void {
@@ -175,8 +184,7 @@ class Store implements EntityStore {
 	}
 
 	// Before any decision about retention, the store's time reaches the change log (EM8).
-	#timeForDecision(): number {
-		const now = this.#now();
+	#timeForDecision(now: number): number {
 		if (now > this.state.latestAt) {
 			this.#append({ type: "time", at: iso(now) });
 			this.state.latestAt = now;
@@ -193,41 +201,44 @@ class Store implements EntityStore {
 		requireJson(input);
 		requireInputShape(operation, input);
 		requireWrite(write);
-		return this.#checkRepeat(operation, input as unknown as JsonValue, write);
+		return this.#checkRepeat(operation, input as unknown as JsonValue, write, this.#now());
 	}
 
-	#checkRepeat(operation: WriteOperation, input: JsonValue, write: WriteContext): RepeatCheck {
+	// `clock` is the store's time read once for the call, so a clock outside EM8's range has already thrown.
+	#checkRepeat(operation: WriteOperation, input: JsonValue, write: WriteContext, clock: number): RepeatCheck {
 		const remembered = this.state.writes.get(write.writeId);
 		if (remembered === undefined) return { repeat: "none" };
-		const now = this.#timeForDecision();
+		const now = this.#timeForDecision(clock);
 		if (!this.#within(remembered.at, now)) return { repeat: "none" };
 		if (remembered.digest !== writeDigest(operation, input, write.writer)) return { repeat: "identity-reused", refusal: storeRefusal("identity-reused", { writeId: write.writeId }) };
 		return { repeat: "recognised", answer: copyJson(remembered.answer as unknown as JsonValue) as unknown as WriteAnswer };
 	}
 
 	create(input: CreateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("create", input, write, () => this.#planCreate(input, write)) as StoreOutcome<EntityAnswer>;
+		return this.#write("create", input, write, (now) => this.#planCreate(input, write, now)) as StoreOutcome<EntityAnswer>;
 	}
 
 	update(input: UpdateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("update", input, write, () => this.#planUpdate(input, write)) as StoreOutcome<EntityAnswer>;
+		return this.#write("update", input, write, (now) => this.#planUpdate(input, write, now)) as StoreOutcome<EntityAnswer>;
 	}
 
 	delete(input: DeleteInput, write: WriteContext): StoreOutcome<DeleteAnswer> {
-		return this.#write("delete", input, write, () => this.#planDelete(input)) as StoreOutcome<DeleteAnswer>;
+		return this.#write("delete", input, write, (now) => this.#planDelete(input, now)) as StoreOutcome<DeleteAnswer>;
 	}
 
 	// A write: its identity first (EM7), then the rows of EM9 in order, then the change, appended before it is seen.
-	#write(operation: WriteOperation, input: unknown, write: WriteContext, plan: () => Plan | StoreRefusal): StoreOutcome<WriteAnswer> {
+	#write(operation: WriteOperation, input: unknown, write: WriteContext, plan: (now: number) => Plan | StoreRefusal): StoreOutcome<WriteAnswer> {
 		this.#alive();
 		requireJson(input);
 		requireInputShape(operation, input);
 		requireWrite(write);
 		const json = input as JsonValue;
-		const repeat = this.#checkRepeat(operation, json, write);
+		// The clock is read, and checked against EM8's range, once, before the identity or any row is decided.
+		const now = this.#now();
+		const repeat = this.#checkRepeat(operation, json, write, now);
 		if (repeat.repeat === "recognised") return { outcome: "answered", answer: repeat.answer };
 		if (repeat.repeat === "identity-reused") return { outcome: "refused", refusal: repeat.refusal };
-		const planned = plan();
+		const planned = plan(now);
 		if ("part" in planned) return { outcome: "refused", refusal: planned };
 		const record: ChangeRecord = {
 			type: "change",
@@ -245,8 +256,8 @@ class Store implements EntityStore {
 	}
 
 	// The position and time a change made now would take.
-	#next(): { position: number; atMs: number; at: string } {
-		const atMs = this.#now();
+	#next(now: number): { position: number; atMs: number; at: string } {
+		const atMs = Math.max(now, this.state.latestAt);
 		return { position: this.state.position + 1, atMs, at: iso(atMs) };
 	}
 
@@ -254,19 +265,19 @@ class Store implements EntityStore {
 		return kind !== undefined && !this.judges.has(kind) ? storeRefusal("unknown-kind", { kind }) : undefined;
 	}
 
-	#planCreate(input: CreateInput, write: WriteContext): Plan | StoreRefusal {
+	#planCreate(input: CreateInput, write: WriteContext, now: number): Plan | StoreRefusal {
 		const refusal = this.#unknownKind(input.kind)
 			?? this.#nameRefusal(input.kind, input.name, undefined)
 			?? tagRefusal(input.tags);
 		if (refusal) return refusal;
-		const next = this.#next();
+		const next = this.#next(now);
 		const id = `e${next.position}.1`;
 		const stamp = { position: next.position, at: next.at, writer: write.writer };
 		const entity: EntityEnvelope = { id, kind: input.kind, name: input.name, tags: sortTags(input.tags), body: copyJson(input.body), revision: 1, created: stamp, changed: { ...stamp } };
 		return this.#envelopeRefusal(entity) ?? { ...next, id, entity, answer: { position: next.position, entity } };
 	}
 
-	#planUpdate(input: UpdateInput, write: WriteContext): Plan | StoreRefusal {
+	#planUpdate(input: UpdateInput, write: WriteContext, now: number): Plan | StoreRefusal {
 		const target = input.target;
 		let refusal = this.#unknownKind(target.kind) ?? targetRefusal(target);
 		if (refusal) return refusal;
@@ -279,7 +290,7 @@ class Store implements EntityStore {
 		if (refusal) return refusal;
 		let body = current.body;
 		if (input.body !== undefined) body = isJsonObject(current.body) && isJsonObject(input.body) ? { ...current.body, ...copyJson(input.body) } : copyJson(input.body);
-		const next = this.#next();
+		const next = this.#next(now);
 		const entity: EntityEnvelope = {
 			id: current.id,
 			kind: current.kind,
@@ -293,7 +304,7 @@ class Store implements EntityStore {
 		return this.#envelopeRefusal(entity) ?? { ...next, id: entity.id, entity, answer: { position: next.position, entity } };
 	}
 
-	#planDelete(input: DeleteInput): Plan | StoreRefusal {
+	#planDelete(input: DeleteInput, now: number): Plan | StoreRefusal {
 		const target = input.target;
 		let refusal = this.#unknownKind(target.kind) ?? targetRefusal(target);
 		if (refusal) return refusal;
@@ -301,7 +312,7 @@ class Store implements EntityStore {
 		if (current === undefined) return storeRefusal("not-found", { target: target as JsonObject });
 		refusal = revisionRefusal(input.expectedRevision, current.revision);
 		if (refusal) return refusal;
-		const next = this.#next();
+		const next = this.#next(now);
 		const deleted = { id: current.id, kind: current.kind, name: current.name, revision: current.revision + 1 };
 		return { ...next, id: current.id, entity: null, answer: { position: next.position, deleted } };
 	}
@@ -348,11 +359,13 @@ class Store implements EntityStore {
 		const asOf = input.asOf ?? current;
 		if (asOf < 0 || asOf > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: asOf, current }) };
 		if (asOf < current) {
-			const now = this.#timeForDecision();
+			const now = this.#timeForDecision(this.#now());
 			if (!this.#within(this.state.changeAt(asOf + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: asOf }) };
 		}
+		// A find's tags are a set (EM2): more than 32 distinct tags match nothing, as no entity carries more
+		// than 32, while any number of copies of one tag is that tag once (EM9). Tags are not judged.
 		const wanted = new Set(input.tags ?? []);
-		const matches = this.state
+		const matches = wanted.size > LIMITS.tags ? [] : this.state
 			.entitiesAsOf(input.kind, asOf)
 			.filter((entity) => [...wanted].every((tag) => entity.tags.includes(tag)))
 			.filter((entity) => input.after === undefined || compareCodePoints(entity.name, input.after) > 0)

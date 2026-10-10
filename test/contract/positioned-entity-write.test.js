@@ -45,9 +45,12 @@ test("local: a change of two writes takes one position, and its entities are e<p
 test("local: an input that does not fit its operation's shape is a programming error, thrown, and takes no position", () => {
 	const { store, storage } = openLocal();
 	const write = { writer: "alice", writeId: "w" };
-	assert.throws(() => store.create({ kind: "note", name: "a", tags: [], body: 1, writer: "bob" }, write), TypeError, "an input carrying a writer");
-	assert.throws(() => store.create({ kind: "note", name: "a", body: 1 }, write), TypeError, "a create without tags");
-	assert.throws(() => store.update({ target: { id: 5 } }, write), TypeError, "a target identity that is not a string");
+	const naming = (field) => (e) => e instanceof TypeError && e.message.includes(field);
+	assert.throws(() => store.create({ kind: "note", name: "a", tags: [], body: 1, writer: "bob" }, write), naming("/writer"), "an input carrying a writer, the field named");
+	assert.throws(() => store.update({ target: { id: "e1.1" }, name: "b", writer: "bob" }, write), naming("/writer"), "an update carrying a writer");
+	assert.throws(() => store.delete({ target: { id: "e1.1" }, writer: "bob" }, write), naming("/writer"), "a delete carrying a writer");
+	assert.throws(() => store.create({ kind: "note", name: "a", body: 1 }, write), naming("/tags"), "a create without tags, the field named");
+	assert.throws(() => store.update({ target: { id: 5 } }, write), naming("/target/id"), "a target identity that is not a string, the field named");
 	assert.throws(() => store.update({ target: { id: "e1.1" }, expectedRevision: 1.5, name: "x" }, write), TypeError, "an expected revision that is not an integer");
 	assert.throws(() => store.find({ kind: "note", asOf: "1" }), TypeError, "a position that is not an integer");
 	assert.throws(() => store.create({ kind: "note", name: "a", tags: [], body: undefined }, write), TypeError, "a body that is not JSON");

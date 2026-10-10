@@ -5,13 +5,21 @@
 // Runs the shared suite's cases for this row locally - including the repeat one millisecond inside the
 // bound and exactly at it, and EM8's schedule across a restart - then the cases only a local store shows:
 // the digest EM7 defines, computed here with an independent SHA-256, what each change record keeps, and
-// the check entity-api's host half asks before its policy rules (EM13, step 2).
+// the check entity-api's host half asks before its policy rules (EM13, step 2). EM8's schedule also runs on
+// the file port in a child process that is really killed, and the store is reopened with the clock set back.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { registerEntityStoreSuite } from "@apnex/entity-store/contract-suite";
+import { createFileStoragePort } from "@apnex/entity-store/file-storage";
+import { runUntilReadyThenKill } from "../support/child-process.js";
 import { createLocalHarness } from "../support/local-harness.js";
 import { note, openLocal, T0 } from "../support/local-store.js";
+import { SCHEDULE } from "../support/schedule.js";
 
 registerEntityStoreSuite(test, createLocalHarness(), ["repeat-recognition"]);
 
@@ -67,4 +75,49 @@ test("local: a repeat's answer is a copy, so changing it changes neither the sto
 	const repeat = store.create(note("alpha"), write);
 	repeat.answer.entity.name = "mangled";
 	assert.deepEqual(store.create(note("alpha"), write), first);
+});
+
+test("local: an input that does not fit its shape - one carrying a writer included - throws a TypeError naming the field before the identity is checked, and appends nothing", () => {
+	const { store, storage, clock } = openLocal({ historyMs: 1000 });
+	const write = { writer: "alice", writeId: "w1" };
+	const first = store.create(note("alpha"), write);
+	clock.set(T0 + 500);
+	const records = storage.records();
+	const withWriter = { ...note("alpha"), writer: "alice" };
+	const namesWriter = (e) => e instanceof TypeError && e.message.includes("/writer");
+	assert.throws(() => store.create(withWriter, write), namesWriter, "a retained identity whose repeat carries a writer: thrown, not recognised");
+	assert.throws(() => store.create({ ...note("beta"), writer: "alice" }, write), namesWriter, "a retained identity with another input carrying a writer: thrown, not identity-reused");
+	assert.throws(() => store.checkRepeat("create", withWriter, write), namesWriter, "the repeat check throws the same");
+	assert.throws(() => store.update({ target: { id: "e1.1" }, name: 7 }, write), (e) => e instanceof TypeError && e.message.includes("/name"), "a misfit of another field, under a retained identity");
+	assert.deepEqual(storage.records(), records, "nothing was appended, not even the time record a decision about retention would need");
+	assert.equal(store.historyBound().answer.position, 1);
+	assert.deepEqual(store.create(note("alpha"), write), first, "an input that fits is checked for its identity first: recognised");
+	const reused = store.create({ ...note("beta"), name: "Not A Name" }, write);
+	assert.deepEqual([reused.outcome, reused.refusal.code], ["refused", "identity-reused"], "and refused as identity-reused before its name is judged");
+});
+
+test("file port, process killed: changes at 1000 and 1900 with a bound of 1000, a repeat of the second at 2000, the process killed, the clock set back to 1900 and the store reopened, and a repeat of the first runs afresh", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "entity-store-schedule-"));
+	try {
+		const file = path.join(dir, "changes.log");
+		const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "support", "schedule-child.js");
+		const [first, second, repeat] = await runUntilReadyThenKill(child, [file, "repeat"], path.join(dir, "acks"));
+		assert.deepEqual([first.outcome.answer.position, second.outcome.answer.position], [1, 2], "the changes at 1000 and 1900 were acknowledged");
+		assert.equal(second.outcome.answer.entity.changed.at, "1970-01-01T00:00:01.900Z");
+		assert.deepEqual(repeat.outcome, second.outcome, "the repeat of the second at 2000 was recognised before the kill");
+		const timeRecords = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.includes('"type":"time"'));
+		assert.deepEqual(timeRecords.map((l) => JSON.parse(l).at), ["1970-01-01T00:00:02.000Z"], "the decision at 2000 reached the change log before the kill");
+
+		const { store, storage } = openLocal({ storage: createFileStoragePort(file), time: 1900, historyMs: SCHEDULE.historyMs });
+		try {
+			const again = store[SCHEDULE.first.op](SCHEDULE.first.input, SCHEDULE.first.write);
+			assert.deepEqual([again.outcome, again.refusal?.code], ["refused", "name-taken"], "the repeat of the first runs afresh: the store's time is 2000, not the clock's 1900, and the create meets its own entity's name");
+			assert.deepEqual(store[SCHEDULE.second.op](SCHEDULE.second.input, SCHEDULE.second.write), second.outcome, "the second is still recognised at 2000");
+			assert.equal(store.historyBound().answer.position, 2, "nothing took a position");
+		} finally {
+			storage.close();
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

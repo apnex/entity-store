@@ -4,10 +4,12 @@
 // Both ports are given the same scenario - a create, a rename, a delete, a name taken again after its
 // delete, a repeated delete and a time record - and a store recovered from what each kept must hold every
 // entry, revision, position, writer and repeat record. The file port is also killed for real: a child
-// process is sent SIGKILL just after a change was acknowledged. The change log's format, its truncation and
-// the faults that stop a store opening are in ../support/storage-port-file-cases.js, registered here.
+// process is sent SIGKILL just after a change was acknowledged, and another just after it wrote the memory
+// port's change of two writes to a change log file, which is then recovered whole and, cut short, with
+// neither write. Children acknowledge through a file, not a pipe (../support/child-process.js). The change
+// log's format, its truncation and the faults that stop a store opening are in
+// ../support/storage-port-file-cases.js, registered here.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,9 +18,10 @@ import { fileURLToPath } from "node:url";
 import { createMemoryStoragePort } from "@apnex/entity-store";
 import { registerEntityStoreSuite } from "@apnex/entity-store/contract-suite";
 import { createFileStoragePort } from "@apnex/entity-store/file-storage";
+import { runUntilReadyThenKill } from "../support/child-process.js";
 import { createLocalHarness } from "../support/local-harness.js";
 import { KINDS, openLocal } from "../support/local-store.js";
-import { checkRecovered, runScenario, snapshot, STEPS, T0 } from "../support/recovery-scenario.js";
+import { appendTwoWriteChange, checkRecovered, PAIR, runScenario, snapshot, STEPS, T0 } from "../support/recovery-scenario.js";
 import "../support/storage-port-file-cases.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -64,46 +67,26 @@ test("the memory port keeps the same records as the file port's change log", () 
 	fs.rmSync(dir, { recursive: true });
 });
 
-test("a change of two writes written by the memory port's test fixture is recovered, with every other record of the scenario", () => {
+test("a change of two writes written by the memory port's test fixture is recovered, with every other record of the scenario", async () => {
 	const storage = createMemoryStoragePort();
 	const first = openLocal({ storage });
 	const done = runScenario(first.store, first.clock);
-	const p = first.store.historyBound().answer.position + 1;
-	const at = new Date(T0 + 80).toISOString();
-	const stamp = { position: p, at, writer: "fixture" };
-	const one = { id: `e${p}.1`, kind: "note", name: "pair-one", tags: [], body: { pointer: "https://e.x/1", summary: "one" }, revision: 1, created: stamp, changed: stamp };
-	const renamed = { ...snapshot(first.store).kinds.note.find((e) => e.name === "beta"), name: "pair-two", revision: 2, changed: stamp };
-	storage.append({ type: "change", position: p, at, writer: "fixture", writeId: "pair", digest: "f".repeat(64), answer: { position: p, entity: one },
-		writes: [{ operation: "create", id: one.id, entity: one }, { operation: "update", id: renamed.id, entity: renamed }] });
+	const { position: p, one } = await appendTwoWriteChange(storage, first.store);
 	const second = openLocal({ storage });
 	const after = snapshot(second.store);
 	assert.equal(after.position, p, "the two writes took one position");
 	assert.deepEqual(after.kinds.note.map((e) => e.name), ["alpha-renamed", "pair-one", "pair-two"]);
 	assert.equal(second.store.read({ target: { kind: "note", name: "beta" } }).answer.entity, null, "the second write's rename freed the old name");
-	const reuse = second.store.create({ kind: "note", name: "x", tags: [], body: { pointer: "https://e.x/", summary: "x" } }, { writer: "f", writeId: "pair" });
+	second.clock.set(first.clock.now() + 100);
+	assert.deepEqual(second.store[PAIR.op](PAIR.input, PAIR.write), { outcome: "answered", answer: { position: p, entity: one } }, "its repeat is recognised, answering the create");
+	const reuse = second.store.create({ kind: "note", name: "x", tags: [], body: { pointer: "https://e.x/", summary: "x" } }, PAIR.write);
 	assert.deepEqual([reuse.outcome, reuse.refusal?.code], ["refused", "identity-reused"], "its write identity is retained, naming the recovered change");
 	assert.equal(done.length, STEPS.length);
 });
 
-/** Runs the child until it has acknowledged every step it was given, then kills it with SIGKILL. */
+/** Runs the kill child until it has acknowledged every step it was given, then kills it with SIGKILL. */
 function runAndKill(file, count) {
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [path.join(here, "..", "support", "kill-child.js"), file, String(count)], { stdio: ["ignore", "pipe", "inherit"] });
-		const acks = [];
-		let buffered = "";
-		child.stdout.on("data", (chunk) => {
-			buffered += chunk;
-			let nl;
-			while ((nl = buffered.indexOf("\n")) >= 0) {
-				const message = JSON.parse(buffered.slice(0, nl));
-				buffered = buffered.slice(nl + 1);
-				if (message.error) reject(new Error(JSON.stringify(message.error)));
-				else if (message.ack) acks.push(message);
-				else if (message.ready) child.kill("SIGKILL");
-			}
-		});
-		child.on("exit", (code, signal) => signal === "SIGKILL" ? resolve(acks) : reject(new Error(`the child exited ${code} ${signal}`)));
-	});
+	return runUntilReadyThenKill(path.join(here, "..", "support", "kill-child.js"), [file, String(count)], `${file}.acks`);
 }
 
 test("file port: after the process is killed just after a change was acknowledged, every acknowledged change is recovered and the next takes the next position", async () => {
@@ -132,4 +115,76 @@ test("file port: killed part-way and ending in an incomplete record, the log rec
 	const next = runScenario(recovered.store, recovered.clock, STEPS.slice(3, 4));
 	assert.equal(next[0].answer.position, 4, "the next change takes position 4");
 	fs.rmSync(dir, { recursive: true });
+});
+
+/** Runs the two-write child until its store is open on the change log it wrote, then kills it with SIGKILL. */
+async function writeTwoWriteLogAndKill(dir) {
+	const file = path.join(dir, "changes.log");
+	const [written] = await runUntilReadyThenKill(path.join(here, "..", "support", "two-write-child.js"), [file], path.join(dir, "acks"));
+	return { file, written };
+}
+
+test("file port: the memory port's change of two writes, written to a change log file, is recovered after the process is killed - both entities at its one position, its repeat recognised", async () => {
+	const dir = tempDir();
+	try {
+		const { file, written } = await writeTwoWriteLogAndKill(dir);
+		const { position: p, one, renamed } = written.pair;
+		assert.equal(written.snapshot.position, p, "the child's store opened on the file at the change's position");
+		const lines = fs.readFileSync(file, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
+		assert.deepEqual(lines.at(-1), written.pair.record, "the change of two writes is the change log's last record, as written");
+		const recovered = openLocal({ storage: createFileStoragePort(file) });
+		try {
+			const after = snapshot(recovered.store);
+			assert.deepEqual(after, written.snapshot, "everything the child's store held is recovered");
+			assert.equal(after.position, p, "the two writes took one position");
+			assert.deepEqual(recovered.store.read({ target: { id: one.id } }).answer, { position: p, entity: one }, "the first write's entity, at the change's position");
+			assert.deepEqual(recovered.store.read({ target: { id: renamed.id } }).answer, { position: p, entity: renamed }, "the second write's entity, at the same position");
+			assert.equal(recovered.store.read({ target: { kind: "note", name: "beta" } }).answer.entity, null, "the second write's rename freed the old name");
+			const asOfBefore = recovered.store.find({ kind: "note", asOf: p - 1 }).answer.entries.map((e) => e.name);
+			assert.deepEqual(asOfBefore, ["alpha-renamed", "beta"], "as of the position before, neither write is seen");
+			recovered.clock.set(T0 + 100);
+			assert.deepEqual(recovered.store[PAIR.op](PAIR.input, PAIR.write), { outcome: "answered", answer: { position: p, entity: one } }, "its repeat is recognised, answering the create, and takes no position");
+			for (const { writeId, answer } of written.done) {
+				const step = STEPS.find((s) => s.write.writeId === writeId);
+				assert.deepEqual(recovered.store[step.op](step.input, step.write), { outcome: "answered", answer }, `the scenario's ${writeId} is recognised too`);
+			}
+			assert.equal(recovered.store.historyBound().answer.position, p, "no repeat took a position");
+			const next = recovered.store.create({ kind: "note", name: "after", tags: [], body: { pointer: "https://e.x/a", summary: "a" } }, { writer: "erin", writeId: "next" });
+			assert.equal(next.answer.entity.id, `e${p + 1}.1`, "the next change takes the next position");
+		} finally {
+			recovered.storage.close();
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("file port: the same change of two writes cut short recovers with neither write", async () => {
+	const dir = tempDir();
+	try {
+		const { file, written } = await writeTwoWriteLogAndKill(dir);
+		const { position: p, one, renamed } = written.pair;
+		const whole = fs.readFileSync(file);
+		const lastLine = Buffer.from(`${JSON.stringify(written.pair.record)}\n`, "utf8");
+		const before = whole.subarray(0, whole.length - lastLine.length);
+		assert.ok(whole.subarray(before.length).equals(lastLine), "the change of two writes is the last line");
+		const secondWrite = lastLine.indexOf('"pair-two"');
+		for (const keep of [1, Math.floor(lastLine.length / 2), secondWrite, secondWrite + 12, lastLine.length - 2, lastLine.length - 1]) {
+			fs.writeFileSync(file, Buffer.concat([before, lastLine.subarray(0, keep)]));
+			const recovered = openLocal({ storage: createFileStoragePort(file) });
+			try {
+				const what = `the record cut to ${keep} of ${lastLine.length} bytes`;
+				assert.ok(fs.readFileSync(file).equals(before), `${what}: the file is cut back to the record before it`);
+				assert.equal(recovered.store.historyBound().answer.position, p - 1, `${what}: the position is the one before it`);
+				assert.equal(recovered.store.read({ target: { id: one.id } }).answer.entity, null, `${what}: the first write is not recovered`);
+				assert.equal(recovered.store.read({ target: { kind: "note", name: "pair-two" } }).answer.entity, null, `${what}: the second write is not recovered`);
+				assert.equal(recovered.store.read({ target: { id: renamed.id } }).answer.entity.name, "beta", `${what}: the entity the second write renamed keeps its name`);
+				assert.deepEqual(recovered.store.checkRepeat(PAIR.op, PAIR.input, PAIR.write), { repeat: "none" }, `${what}: its write identity is not held`);
+			} finally {
+				recovered.storage.close();
+			}
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
