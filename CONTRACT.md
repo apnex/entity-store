@@ -37,7 +37,7 @@ The trait column names any trait a system takes on by using the capability.
 | `positioned-entity-write` | provides | none | Create, update and delete entities; each change - one or more writes, applied all or nothing - takes exactly one position. | T1 when storage is durable |
 | `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
 | `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
-| `repeat-recognition` | provides | none | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer, for as long as the change it repeats is within the history bound. | T1 when storage is durable |
+| `repeat-recognition` | provides | `shape-check:plain-json-value` | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer, for as long as the change it repeats is within the history bound. | T1 when storage is durable |
 | `identity-name-lookup` | provides | none | Read one entity by identity or by name, with the position the answer reflects. | none |
 | `find-by-kind-tags` | provides | none | Find every entity matching a kind and any set of tags, with the position the answer reflects. | none |
 | `changes-since-position` | provides | none | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
@@ -109,7 +109,7 @@ Kinds and storage are supplied through declared seams, so a new kind or a new st
 
 **Consumes, through a declared contract:**
 
-- `shape-check`: `declared-shape-validation`
+- `shape-check`: `declared-shape-validation`, `plain-json-value`
 
 It never reaches the network.
 
