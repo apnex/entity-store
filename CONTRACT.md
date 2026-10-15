@@ -34,7 +34,7 @@ The trait column names any trait a system takes on by using the capability.
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
 | `declared-shape-validation` | carries from shape-check | none | Kinds are supplied by the application as declared shapes; a write that does not fit its kind is refused, and no kind is built in. | none |
-| `positioned-entity-write` | provides | none | Create, update and delete entities; each change - one or more writes, applied all or nothing - takes exactly one position. | T1 when storage is durable |
+| `positioned-entity-write` | provides | `shape-check:plain-json-value` | Create, update and delete entities; each change - one or more writes, applied all or nothing - takes exactly one position. | T1 when storage is durable |
 | `change-provenance` | provides | none | Each change records when it was made and the writer the application names, unchecked. | T1 when storage is durable |
 | `expected-revision-write` | provides | none | A write may name the revision it expects, and is refused if another change got there first. | T1 when storage is durable |
 | `repeat-recognition` | provides | `shape-check:plain-json-value` | A write carries an identity its writer supplies; a repeat under that identity takes no second position and returns the first answer, for as long as the change it repeats is within the history bound. | T1 when storage is durable |
@@ -43,7 +43,7 @@ The trait column names any trait a system takes on by using the capability.
 | `changes-since-position` | provides | none | Every change after a position still held, once and in order, or a plain statement that the position is no longer held. | none |
 | `follow-narrowed-set` | provides | none | Changes since a position, narrowed by kind and tags, reporting each entity as entering, changing within, or leaving the set; a reader may wait for the next change. | none |
 | `stated-history-bound` | provides | none | History is kept to a bound the application states, any reader can read the bound, and a reader behind it is told so. | none |
-| `storage-port` | provides | none | Persistence is through a storage port the application supplies, in memory or durable. | T1 when durable |
+| `storage-port` | provides | `shape-check:plain-json-value` | Persistence is through a storage port the application supplies, in memory or durable; what its `load` returns, or throws, is read as plain data through `shape-check`'s `plain-json-value` (zorg's `D54`, `D55`), any non-plain return or throw refused as `log-corrupt` with any native promises met observed. | T1 when durable |
 | `store-refusal` | provides | none | A refusal of a write or read says, in the shared refusal form, what was wrong and how to fix it: a body that does not fit its kind, a revision that moved, a position no longer held. | none |
 
 **Traits.**\
