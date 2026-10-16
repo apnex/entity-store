@@ -3,10 +3,9 @@
  * (EM10), the refusal record (EM9), the change log's records (EM15), and the two ports an application
  * supplies - storage and the clock.
  */
-import type { JsonInput, ShapeMisfit, ShapeProblem } from "@apnex/shape-check";
-import type { JsonObject, JsonValue } from "./json-value.js";
+import type { JsonInput, JsonObject, JsonValue, ShapeMisfit, ShapeProblem } from "@apnex/shape-check";
 
-export type { JsonObject, JsonValue } from "./json-value.js";
+export type { JsonObject, JsonValue } from "@apnex/shape-check";
 
 /** When and by whom a change was made: its position, its time in UTC to the millisecond, and the writer named (EM5). */
 export interface ChangeStamp {

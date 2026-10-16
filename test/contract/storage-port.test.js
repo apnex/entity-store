@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createMemoryStoragePort } from "@apnex/entity-store";
+import { createMemoryStoragePort, openEntityStore } from "@apnex/entity-store";
 import { registerEntityStoreSuite } from "@apnex/entity-store/contract-suite";
 import { createFileStoragePort } from "@apnex/entity-store/file-storage";
 import { runUntilReadyThenKill } from "../support/child-process.js";
@@ -187,4 +187,55 @@ test("file port: the same change of two writes cut short recovers with neither w
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("D2-E1, D54, D55: src/json-value.ts is removed, and what a storage port's load returns or throws is read as plain data through shape-check - any non-plain object, getter, inherited or symbol property, or nested rejected Promise is refused as log-corrupt with zero getter calls and zero unhandled rejections", async () => {
+	assert.equal(fs.existsSync(path.join(here, "..", "..", "src", "json-value.ts")), false, "src/json-value.ts does not exist");
+	let getters = 0;
+	const sym = Symbol("s");
+	const inherited = Object.create({ ok: true, records: [] });
+	const withSymbol = { ok: true, records: [], [sym]: 1 };
+	const nonEnumerable = { ok: true, records: [] };
+	Object.defineProperty(nonEnumerable, "hidden", { value: 1, enumerable: false });
+	const classInstance = new (class Load { ok = true; records = []; })();
+	const cases = [
+		() => {
+			const err = new Error("load failed");
+			err.nested = Promise.reject(new Error("thrown nested rejection"));
+			throw err;
+		},
+		() => Promise.reject(new Error("returned promise")),
+		() => ({ get ok() { getters++; return true; }, records: [] }),
+		() => ({ ok: true, get records() { getters++; return []; } }),
+		() => ({ ok: true, records: [{ line: 2, get record() { getters++; return { type: "time", at: "2026-10-09T10:00:00.000Z" }; } }] }),
+		() => ({ ok: true, records: [{ line: 2, record: { type: "time", get at() { getters++; return "2026-10-09T10:00:00.000Z"; } } }] }),
+		() => ({ ok: true, records: [{ line: 2, record: { type: "time", at: "2026-10-09T10:00:00.000Z" }, extra: Promise.reject(new Error("record entry rejection")) }] }),
+		() => ({ ok: false, fault: { code: "log-corrupt", line: 1, get message() { getters++; return "x"; }, p: Promise.reject(new Error("fault rejection")) } }),
+		() => inherited,
+		() => withSymbol,
+		() => nonEnumerable,
+		() => classInstance,
+		() => new Proxy({ ok: true, records: [] }, { ownKeys() { throw Object.assign(new Error("trap"), { p: Promise.reject(new Error("trap rejection")) }); } }),
+	];
+	const unhandled = [];
+	const onUnhandled = (reason) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		for (const [i, load] of cases.entries()) {
+			const opening = openEntityStore({
+				storage: { load, append() {} },
+				clock: { now: () => T0 },
+				historyMs: 60_000,
+				maxEntityBytes: 65_536,
+				kinds: KINDS,
+			});
+			assert.equal(opening.opened, false, `case ${i} is refused`);
+			assert.equal(opening.refusal.code, "log-corrupt", `case ${i} code`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 30));
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.equal(getters, 0, "no getter on a loaded value was invoked");
+	assert.deepEqual(unhandled, [], "every rejected promise was observed");
 });

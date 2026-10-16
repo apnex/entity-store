@@ -5,25 +5,24 @@
  * a time. A change is appended to the storage port before any read sees it or its answer is returned; a
  * failed append stops the store, which then answers nothing more.
  */
-import { prepareShapeDocument, type PreparedShape, type ShapeMisfit } from "@apnex/shape-check";
-import { recoverLog, type RecoveredState } from "./change-log.js";
 import {
-	canonicalJson,
-	canonicalSize,
-	compareCodePoints,
-	copyJson,
-	cutTo128,
 	firstUnsafeInteger,
-	isJson,
-	isJsonObject,
 	nestingDepth,
-	utf8Encode,
+	observePromises,
+	prepareShapeDocument,
+	readPlainJson,
+	snapshotJson,
+	toCanonicalJson,
+	utf8ByteLength,
 	type JsonObject,
 	type JsonValue,
-} from "./json-value.js";
+	type PreparedShape,
+	type ShapeMisfit,
+} from "@apnex/shape-check";
+import { compareCodePoints, isJsonObject, recoverLog, type RecoveredState } from "./change-log.js";
 import { requireInputShape } from "./operation-inputs.js";
 import { sha256Hex } from "./sha256.js";
-import { storeRefusal } from "./store-refusal.js";
+import { cutTo128, storeRefusal } from "./store-refusal.js";
 import type {
 	ChangeRecord,
 	ClockPort,
@@ -36,6 +35,7 @@ import type {
 	FindAnswer,
 	FindInput,
 	HistoryBoundAnswer,
+	LoadedRecord,
 	LogRecord,
 	OpeningRefusal,
 	ReadAnswer,
@@ -99,25 +99,32 @@ export function openEntityStore(options: StoreOptions): StoreOpening {
 	// A kind shape that is not a JSON value - one holding a cycle included - is the application's
 	// programming error, not a refusal (EM10). Depth is measured before shape-check prepares a shape, so
 	// shape-check, whose walk follows the shape, never meets one deeper than 20 levels.
+	const snapshots = new Map<string, JsonValue>();
 	for (const [kind, shape] of entries) {
-		if (!isJson(shape)) throw new TypeError(`the body shape of kind ${JSON.stringify(cutTo128(kind).text)} is not a JSON value`);
+		const snap = snapshotJson(shape);
+		if (!snap.ok) throw new TypeError(`the body shape of kind ${JSON.stringify(cutTo128(kind).text)} is not a JSON value`);
+		snapshots.set(kind, snap.value);
 	}
-	for (const [kind, shape] of entries) {
-		const depth = nestingDepth(shape as JsonValue);
+	for (const [kind] of entries) {
+		const shape = snapshots.get(kind) as JsonValue;
+		const depth = nestingDepth(shape);
 		if (depth > LIMITS.shapeDepth) return refuse("shape-too-deep", "A kind's body shape nests more than 20 levels.", { kind, depth, limit: LIMITS.shapeDepth });
 	}
 	const prepared = new Map<string, PreparedShape>();
-	for (const [kind, shape] of entries) {
+	for (const [kind] of entries) {
+		const shape = snapshots.get(kind) as JsonValue;
 		const document = prepareShapeDocument(shape);
 		if (!document.accepted) return refuse("shape-refused", "shape-check refuses a kind's body shape.", { kind, problems: document.problems.map((p) => ({ ...p })) });
 		prepared.set(kind, document);
 	}
-	for (const [kind, shape] of entries) {
-		const unsafe = firstUnsafeInteger(shape as JsonValue);
-		if (unsafe !== undefined) return refuse("unsafe-shape", "A kind's body shape holds an integer more than 9007199254740991 from zero.", { kind, pointer: unsafe });
+	for (const [kind] of entries) {
+		const shape = snapshots.get(kind) as JsonValue;
+		const unsafe = firstUnsafeInteger(shape);
+		if (unsafe !== null) return refuse("unsafe-shape", "A kind's body shape holds an integer more than 9007199254740991 from zero.", { kind, pointer: unsafe.pointer });
 	}
-	for (const [kind, shape] of entries) {
-		const bytes = canonicalSize(shape as JsonValue);
+	for (const [kind] of entries) {
+		const shape = snapshots.get(kind) as JsonValue;
+		const bytes = canonicalSize(shape);
 		if (bytes > LIMITS.shapeBytes) return refuse("shape-too-large", "A kind's body shape exceeds 65536 bytes in canonical JSON.", { kind, bytes, limit: LIMITS.shapeBytes });
 	}
 	const judges = new Map<string, Judge>();
@@ -129,7 +136,7 @@ export function openEntityStore(options: StoreOptions): StoreOpening {
 		});
 	}
 
-	const loaded = storage.load();
+	const loaded = readStorageLoad(storage);
 	if (!loaded.ok) return refuse(loaded.fault.code, loaded.fault.message, { line: loaded.fault.line });
 	const recovered = recoverLog(loaded.records);
 	if (!recovered.ok) return refuse("log-corrupt", recovered.message, { line: recovered.line });
@@ -204,10 +211,10 @@ class Store implements EntityStore {
 
 	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck {
 		this.#alive();
-		requireJson(input);
-		requireInputShape(operation, input);
+		const json = snapshotInput(input);
+		requireInputShape(operation, json);
 		requireWrite(write);
-		return this.#checkRepeat(operation, input as unknown as JsonValue, write, this.#now());
+		return this.#checkRepeat(operation, json, write, this.#now());
 	}
 
 	// `clock` is the store's time read once for the call, so a clock outside EM8's range has already thrown.
@@ -217,34 +224,33 @@ class Store implements EntityStore {
 		const now = this.#timeForDecision(clock);
 		if (!this.#within(remembered.at, now)) return { repeat: "none" };
 		if (remembered.digest !== writeDigest(operation, input, write.writer)) return { repeat: "identity-reused", refusal: storeRefusal("identity-reused", { writeId: write.writeId }) };
-		return { repeat: "recognised", answer: copyJson(remembered.answer as unknown as JsonValue) as unknown as WriteAnswer };
+		return { repeat: "recognised", answer: cloneValue(remembered.answer) };
 	}
 
 	create(input: CreateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("create", input, write, (now) => this.#planCreate(input, write, now)) as StoreOutcome<EntityAnswer>;
+		return this.#write("create", input, write, (now, snap) => this.#planCreate(snap as unknown as CreateInput, write, now)) as StoreOutcome<EntityAnswer>;
 	}
 
 	update(input: UpdateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("update", input, write, (now) => this.#planUpdate(input, write, now)) as StoreOutcome<EntityAnswer>;
+		return this.#write("update", input, write, (now, snap) => this.#planUpdate(snap as unknown as UpdateInput, write, now)) as StoreOutcome<EntityAnswer>;
 	}
 
 	delete(input: DeleteInput, write: WriteContext): StoreOutcome<DeleteAnswer> {
-		return this.#write("delete", input, write, (now) => this.#planDelete(input, now)) as StoreOutcome<DeleteAnswer>;
+		return this.#write("delete", input, write, (now, snap) => this.#planDelete(snap as unknown as DeleteInput, now)) as StoreOutcome<DeleteAnswer>;
 	}
 
 	// A write: its identity first (EM7), then the rows of EM9 in order, then the change, appended before it is seen.
-	#write(operation: WriteOperation, input: unknown, write: WriteContext, plan: (now: number) => Plan | StoreRefusal): StoreOutcome<WriteAnswer> {
+	#write(operation: WriteOperation, input: unknown, write: WriteContext, plan: (now: number, snap: JsonValue) => Plan | StoreRefusal): StoreOutcome<WriteAnswer> {
 		this.#alive();
-		requireJson(input);
-		requireInputShape(operation, input);
+		const json = snapshotInput(input);
+		requireInputShape(operation, json);
 		requireWrite(write);
-		const json = input as JsonValue;
 		// The clock is read, and checked against EM8's range, once, before the identity or any row is decided.
 		const now = this.#now();
 		const repeat = this.#checkRepeat(operation, json, write, now);
 		if (repeat.repeat === "recognised") return { outcome: "answered", answer: repeat.answer };
 		if (repeat.repeat === "identity-reused") return { outcome: "refused", refusal: repeat.refusal };
-		const planned = plan(now);
+		const planned = plan(now, json);
 		if ("part" in planned) return { outcome: "refused", refusal: planned };
 		const record: ChangeRecord = {
 			type: "change",
@@ -258,7 +264,7 @@ class Store implements EntityStore {
 		};
 		this.#append(record);
 		this.state.apply(record, planned.atMs);
-		return { outcome: "answered", answer: copyJson(planned.answer as unknown as JsonValue) as unknown as WriteAnswer };
+		return { outcome: "answered", answer: cloneValue(planned.answer) };
 	}
 
 	// The position and time a change made now would take.
@@ -279,7 +285,7 @@ class Store implements EntityStore {
 		const next = this.#next(now);
 		const id = `e${next.position}.1`;
 		const stamp = { position: next.position, at: next.at, writer: write.writer };
-		const entity: EntityEnvelope = { id, kind: input.kind, name: input.name, tags: sortTags(input.tags), body: copyJson(input.body), revision: 1, created: stamp, changed: { ...stamp } };
+		const entity: EntityEnvelope = { id, kind: input.kind, name: input.name, tags: sortTags(input.tags), body: input.body, revision: 1, created: stamp, changed: { ...stamp } };
 		return this.#envelopeRefusal(entity) ?? { ...next, id, entity, answer: { position: next.position, entity } };
 	}
 
@@ -295,14 +301,14 @@ class Store implements EntityStore {
 			?? (input.tags !== undefined ? tagRefusal(input.tags) : undefined);
 		if (refusal) return refusal;
 		let body = current.body;
-		if (input.body !== undefined) body = isJsonObject(current.body) && isJsonObject(input.body) ? { ...current.body, ...copyJson(input.body) } : copyJson(input.body);
+		if (input.body !== undefined) body = isJsonObject(current.body) && isJsonObject(input.body) ? { ...current.body, ...input.body } : input.body;
 		const next = this.#next(now);
 		const entity: EntityEnvelope = {
 			id: current.id,
 			kind: current.kind,
 			name: input.name ?? current.name,
 			tags: input.tags !== undefined ? sortTags(input.tags) : [...current.tags],
-			body: copyJson(body),
+			body,
 			revision: current.revision + 1,
 			created: { ...current.created },
 			changed: { position: next.position, at: next.at, writer: write.writer },
@@ -340,24 +346,24 @@ class Store implements EntityStore {
 		if (bytes > this.maxEntityBytes) return storeRefusal("entity-too-large", {}, { bytes, limit: this.maxEntityBytes });
 		const depth = nestingDepth(envelope);
 		if (depth > LIMITS.envelopeDepth) return storeRefusal("entity-too-deep", {}, { depth, limit: LIMITS.envelopeDepth });
-		const pointer = firstUnsafeInteger(envelope);
-		if (pointer !== undefined) return storeRefusal("unsafe-number", {}, { pointer });
+		const unsafe = firstUnsafeInteger(envelope);
+		if (unsafe !== null) return storeRefusal("unsafe-number", {}, { pointer: unsafe.pointer });
 		return undefined;
 	}
 
-	read(input: ReadInput): StoreOutcome<ReadAnswer> {
+	read(rawInput: ReadInput): StoreOutcome<ReadAnswer> {
 		this.#alive();
-		requireJson(input);
+		const input = snapshotInput(rawInput) as unknown as ReadInput;
 		requireInputShape("read", input);
 		const refusal = this.#unknownKind(input.target.kind) ?? targetRefusal(input.target);
 		if (refusal) return { outcome: "refused", refusal };
 		const entity = this.state.resolve(input.target);
-		return { outcome: "answered", answer: { position: this.state.position, entity: entity === undefined ? null : copyJson(entity as unknown as JsonValue) as unknown as EntityEnvelope } };
+		return { outcome: "answered", answer: { position: this.state.position, entity: entity === undefined ? null : cloneValue(entity) } };
 	}
 
-	find(input: FindInput): StoreOutcome<FindAnswer> {
+	find(rawInput: FindInput): StoreOutcome<FindAnswer> {
 		this.#alive();
-		requireJson(input);
+		const input = snapshotInput(rawInput) as unknown as FindInput;
 		requireInputShape("find", input);
 		const unknown = this.#unknownKind(input.kind);
 		if (unknown) return { outcome: "refused", refusal: unknown };
@@ -382,7 +388,7 @@ class Store implements EntityStore {
 			const size = canonicalSize(entity as unknown as JsonValue) + (entries.length > 0 ? 1 : 0);
 			if (bytes + size > LIMITS.pageBytes) break;
 			bytes += size;
-			entries.push(copyJson(entity as unknown as JsonValue) as unknown as EntityEnvelope);
+			entries.push(cloneValue(entity));
 		}
 		const more = entries.length < matches.length;
 		return { outcome: "answered", answer: { position: asOf, entries, next: more ? (entries[entries.length - 1] as EntityEnvelope).name : null } };
@@ -404,13 +410,67 @@ interface Plan {
 	answer: WriteAnswer;
 }
 
-/** A write's digest (EM7): SHA-256 over the canonical JSON of the input as received, the operation and the writer. */
-export function writeDigest(operation: string, input: JsonValue, writer: string): string {
-	return sha256Hex(utf8Encode(canonicalJson({ input, operation, writer })));
+const utf8Encoder = new TextEncoder();
+
+/** Size in UTF-8 bytes of a plain JSON value written in SD4's canonical form. */
+function canonicalSize(value: JsonValue): number {
+	return utf8ByteLength(toCanonicalJson(value));
 }
 
-function requireJson(input: unknown): void {
-	if (!isJson(input)) throw new TypeError("a store input must be a JSON value");
+/** A write's digest (EM7): SHA-256 over the canonical JSON of the input as received, the operation and the writer. */
+export function writeDigest(operation: string, input: JsonValue, writer: string): string {
+	return sha256Hex(utf8Encoder.encode(toCanonicalJson({ input, operation, writer })));
+}
+
+/** Snapshots a caller's input once through shape-check's `snapshotJson` (SD8), or throws a TypeError. */
+function snapshotInput(input: unknown): JsonValue {
+	const snap = snapshotJson(input);
+	if (!snap.ok) throw new TypeError("a store input must be a JSON value");
+	return snap.value;
+}
+
+/** A mutable deep copy of a validated record or answer (<27 levels), preserving `__proto__` own data properties. */
+function cloneValue<T>(value: T): T {
+	return structuredClone(value);
+}
+
+/**
+ * Reads what a storage port's `load()` returns, or throws, as plain data through shape-check's `readPlainJson`
+ * and `observePromises` (zorg's D54, D55; Delta 2, D2-E1): any throw, non-plain value, getter, inherited
+ * property, symbol or promise is refused as `log-corrupt` with zero getter calls and zero unhandled rejections.
+ */
+function readStorageLoad(storage: StoragePort): { ok: true; records: readonly LoadedRecord[] } | { ok: false; fault: { code: "log-corrupt" | "log-unwritable"; line: number | null; message: string } } {
+	const corrupt = (line: number | null, message: string) => ({ ok: false as const, fault: { code: "log-corrupt" as const, line, message } });
+	let raw: unknown;
+	try {
+		raw = storage.load();
+	} catch (err) {
+		observePromises(err);
+		return corrupt(null, "the storage port's load threw");
+	}
+	const plain = readPlainJson(raw);
+	if (!plain.ok || !isJsonObject(plain.value)) return corrupt(null, "the storage port's load did not return a plain JSON object");
+	const top = plain.value;
+	if (top.ok === false) {
+		const keys = Object.keys(top);
+		if (keys.length !== 2 || !Object.hasOwn(top, "fault") || !isJsonObject(top.fault)) return corrupt(null, "the storage port's load returned a malformed fault");
+		const fault = top.fault;
+		const fkeys = Object.keys(fault);
+		const validLine = fault.line === null || (typeof fault.line === "number" && Number.isSafeInteger(fault.line) && fault.line >= 1);
+		if (fkeys.length !== 3 || (fault.code !== "log-corrupt" && fault.code !== "log-unwritable") || !validLine || typeof fault.message !== "string") {
+			return corrupt(null, "the storage port's load returned a malformed fault");
+		}
+		return { ok: false, fault: { code: fault.code, line: fault.line as number | null, message: fault.message } };
+	}
+	if (top.ok !== true || Object.keys(top).length !== 2 || !Array.isArray(top.records)) return corrupt(null, "the storage port's load did not return { ok: true, records }");
+	const records: LoadedRecord[] = [];
+	for (const entry of top.records) {
+		if (!isJsonObject(entry) || Object.keys(entry).length !== 2 || !Object.hasOwn(entry, "line") || !Object.hasOwn(entry, "record") || typeof entry.line !== "number" || !Number.isSafeInteger(entry.line) || entry.line < 1) {
+			return corrupt(null, "the storage port's load returned a malformed record entry");
+		}
+		records.push({ line: entry.line, record: entry.record });
+	}
+	return { ok: true, records };
 }
 
 function requireWrite(write: WriteContext): void {

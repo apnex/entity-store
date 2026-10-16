@@ -4,8 +4,13 @@
  * cut to its first 128 code points, and `details` then holds `"truncated": true`; the sentences repeat no
  * input string.
  */
-import type { ShapeMisfit } from "@apnex/shape-check";
-import { cutTo128, type JsonObject, type JsonValue } from "./json-value.js";
+import type { JsonObject, JsonValue, ShapeMisfit } from "@apnex/shape-check";
+
+/** The first 128 code points of a string, and whether it was cut (EM9). */
+export function cutTo128(text: string): { text: string; truncated: boolean } {
+	const points = Array.from(text);
+	return points.length > 128 ? { text: points.slice(0, 128).join(""), truncated: true } : { text, truncated: false };
+}
 import type { StoreRefusal, StoreRefusalCode } from "./store-types.js";
 
 const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: string } } = {

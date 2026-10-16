@@ -7,8 +7,27 @@
  * create or update makes its entity the entity's state, a delete removes the entity and frees its name,
  * each change makes its write identity name it, and every time advances the store's time (EM8).
  */
-import { compareCodePoints, copyJson, isJsonObject, type JsonValue } from "./json-value.js";
+import type { JsonObject, JsonValue } from "@apnex/shape-check";
 import type { ChangeRecord, EntityEnvelope, LoadedRecord, WriteAnswer } from "./store-types.js";
+
+/** True for a JSON object, false for null, arrays and scalars. */
+export function isJsonObject(value: unknown): value is JsonObject {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Compares two strings by Unicode code point, not by UTF-16 code unit. */
+export function compareCodePoints(a: string, b: string): number {
+	const x = a[Symbol.iterator]();
+	const y = b[Symbol.iterator]();
+	for (;;) {
+		const p = x.next();
+		const q = y.next();
+		if (p.done) return q.done ? 0 : -1;
+		if (q.done) return 1;
+		const d = (p.value.codePointAt(0) ?? 0) - (q.value.codePointAt(0) ?? 0);
+		if (d !== 0) return d;
+	}
+}
 
 /** What the store remembers of the latest change made under a write identity (EM7). */
 export interface RememberedWrite {
@@ -183,7 +202,7 @@ export function recoverLog(records: readonly LoadedRecord[]): { ok: true; state:
 		const checked = record as { type: string; at: string };
 		const atMs = parseTime(checked.at) as number;
 		if (checked.type === "time") state.latestAt = Math.max(state.latestAt, atMs);
-		else state.apply(copyJson(record as JsonValue) as unknown as ChangeRecord, atMs);
+		else state.apply(record as unknown as ChangeRecord, atMs);
 	}
 	return { ok: true, state };
 }
