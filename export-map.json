@@ -3,7 +3,7 @@
   "paths": {
     ".": {
       "exports": {
-        "openEntityStore": { "part": "entity-store", "serves": ["declared-shape-validation", "positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "storage-port", "store-refusal"] },
+        "openEntityStore": { "part": "entity-store", "serves": ["declared-shape-validation", "positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "stated-history-bound", "storage-port", "store-refusal"] },
         "createMemoryStoragePort": { "part": "entity-store", "serves": ["storage-port"] }
       }
     },
@@ -15,13 +15,12 @@
     },
     "./contract-suite": {
       "exports": {
-        "registerEntityStoreSuite": { "part": "entity-store", "serves": ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "store-refusal"] },
-        "contractSuiteRows": { "part": "entity-store", "serves": ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "stated-history-bound", "store-refusal"] }
+        "registerEntityStoreSuite": { "part": "entity-store", "serves": ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "stated-history-bound", "store-refusal"] },
+        "contractSuiteRows": { "part": "entity-store", "serves": ["positioned-entity-write", "change-provenance", "expected-revision-write", "repeat-recognition", "identity-name-lookup", "find-by-kind-tags", "changes-since-position", "stated-history-bound", "store-refusal"] }
       }
     }
   },
   "deferred": {
-    "changes-since-position": "D15",
     "follow-narrowed-set": "D15"
   }
 }

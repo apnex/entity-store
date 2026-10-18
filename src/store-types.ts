@@ -90,6 +90,35 @@ export interface FindAnswer {
 	next: string | null;
 }
 
+/** The input of `changes` (EM16): the position after which every change is given. */
+export interface ChangesInput {
+	since: number;
+}
+
+/**
+ * The item a delete leaves in `changes` (EM16): what a delete's answer holds, taken from the state the
+ * delete's write replaced, then the change's position, time and writer.
+ */
+export interface DeletedItem {
+	deleted: { id: string; kind: string; name: string; revision: number };
+	position: number;
+	at: string;
+	writer: string;
+}
+
+/** One item of `changes` (EM16): the envelope a create or an update left, or what a delete left. */
+export type ChangeItem = EntityEnvelope | DeletedItem;
+
+/**
+ * One page of `changes` (EM16): the store's position when it answered, one item for each write of each
+ * change it holds, and the position of the last change it holds when more remain.
+ */
+export interface ChangesAnswer {
+	position: number;
+	changes: ChangeItem[];
+	next: number | null;
+}
+
 /** The answer to `history-bound`. */
 export interface HistoryBoundAnswer {
 	position: number;
@@ -102,6 +131,7 @@ export type WriteAnswer = EntityAnswer | DeleteAnswer;
 /** The codes entity-store refuses a write or read with (EM9), in the order it checks them. */
 export type StoreRefusalCode =
 	| "identity-reused"
+	| "writer-too-long"
 	| "unknown-kind"
 	| "invalid-position"
 	| "position-not-held"
@@ -133,7 +163,10 @@ export interface StoreRefusal {
 /** How a store operation ended: answered with its answer, or refused with the refusal record. */
 export type StoreOutcome<A> = { outcome: "answered"; answer: A } | { outcome: "refused"; refusal: StoreRefusal };
 
-/** What the application names for each write: the writer, unchecked, and the write identity its writer supplies (EM7). */
+/**
+ * What the application names for each write (EM7): the writer, never checked for who it names but refused
+ * as `writer-too-long` beyond 1024 code points (zorg's D65), and the write identity its writer supplies.
+ */
 export interface WriteContext {
 	writer: string;
 	writeId: string;
@@ -251,6 +284,8 @@ export interface EntityStore {
 	read(input: ReadInput): StoreOutcome<ReadAnswer>;
 	find(input: FindInput): StoreOutcome<FindAnswer>;
 	historyBound(): StoreOutcome<HistoryBoundAnswer>;
+	/** Gives the changes after a position the store still holds, one page at a time (EM16). */
+	changes(input: ChangesInput): StoreOutcome<ChangesAnswer>;
 	/** Says whether a write is a recognised repeat, without making it (EM13, step 2). */
 	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck;
 }

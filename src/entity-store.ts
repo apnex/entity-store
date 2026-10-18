@@ -1,5 +1,6 @@
 /**
- * The store: entities of the kinds an application gives it, in one order of changes (EM1 to EM10, EM15).
+ * The store: entities of the kinds an application gives it, in one order of changes (EM1 to EM10, EM15),
+ * and the changes after a position the store still holds (EM16).
  *
  * Every operation runs to completion, synchronously, before the next begins, so changes are applied one at
  * a time. A change is appended to the storage port before any read sees it or its answer is returned; a
@@ -24,7 +25,10 @@ import { requireInputShape } from "./operation-inputs.js";
 import { sha256Hex } from "./sha256.js";
 import { cutTo128, storeRefusal } from "./store-refusal.js";
 import type {
+	ChangeItem,
 	ChangeRecord,
+	ChangesAnswer,
+	ChangesInput,
 	ClockPort,
 	CreateInput,
 	DeleteAnswer,
@@ -57,9 +61,11 @@ export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 /** EM2's tag pattern. */
 export const TAG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}:[a-z0-9][a-z0-9-]{0,62}$/;
 
-/** The limits the target states (EM2, EM8, EM10). */
+/** The limits the target states (EM2, EM7, EM8, EM10, EM16). */
 export const LIMITS = Object.freeze({
 	tags: 32,
+	/** EM7's bound on a writer, in Unicode code points, so every change fits a page of `changes` (zorg's D65). */
+	writerCodePoints: 1024,
 	envelopeDepth: 27,
 	shapeDepth: 20,
 	shapeBytes: 65536,
@@ -250,6 +256,10 @@ class Store implements EntityStore {
 		const repeat = this.#checkRepeat(operation, json, write, now);
 		if (repeat.repeat === "recognised") return { outcome: "answered", answer: repeat.answer };
 		if (repeat.repeat === "identity-reused") return { outcome: "refused", refusal: repeat.refusal };
+		// writer-too-long comes after the identity (EM9), so a repeat of a change recovered from a log written
+		// before the bound is still recognised above.
+		const writerLength = codePointLength(write.writer);
+		if (writerLength > LIMITS.writerCodePoints) return { outcome: "refused", refusal: storeRefusal("writer-too-long", {}, { length: writerLength, limit: LIMITS.writerCodePoints }) };
 		const planned = plan(now, json);
 		if ("part" in planned) return { outcome: "refused", refusal: planned };
 		const record: ChangeRecord = {
@@ -398,6 +408,47 @@ class Store implements EntityStore {
 		this.#alive();
 		return { outcome: "answered", answer: { position: this.state.position, historyMs: this.historyMs } };
 	}
+
+	// The canonical JSON size of each item of a change, by position, measured once.
+	readonly #itemSizes: number[][] = [];
+
+	#sizesAt(position: number): number[] {
+		let sizes = this.#itemSizes[position];
+		if (sizes === undefined) {
+			sizes = (this.state.changeItems[position] as ChangeItem[]).map((item) => canonicalSize(item as unknown as JsonValue));
+			this.#itemSizes[position] = sizes;
+		}
+		return sizes;
+	}
+
+	// One page of the changes after `since` (EM16): `since` checked as a find's `asOf` is (EM8, EM10), then the
+	// items of whole changes up to 524288 bytes of canonical JSON in `changes`, brackets and commas counted,
+	// and the items of at least one change while any remains.
+	changes(rawInput: ChangesInput): StoreOutcome<ChangesAnswer> {
+		this.#alive();
+		const input = snapshotInput(rawInput) as unknown as ChangesInput;
+		requireInputShape("changes", input);
+		const current = this.state.position;
+		const since = input.since;
+		if (since < 0 || since > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: since, current }) };
+		if (since < current) {
+			const now = this.#timeForDecision(this.#now());
+			if (!this.#within(this.state.changeAt(since + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+		}
+		const changes: ChangeItem[] = [];
+		let bytes = 2;
+		let last = since;
+		for (let position = since + 1; position <= current; position++) {
+			// Every item but the page's first is preceded by a comma.
+			let size = changes.length === 0 ? -1 : 0;
+			for (const itemSize of this.#sizesAt(position)) size += itemSize + 1;
+			if (last !== since && bytes + size > LIMITS.pageBytes) break;
+			bytes += size;
+			for (const item of this.state.changeItems[position] as ChangeItem[]) changes.push(cloneValue(item));
+			last = position;
+		}
+		return { outcome: "answered", answer: { position: current, changes, next: last < current ? last : null } };
+	}
 }
 
 /** What a write that passed every check would change. */
@@ -471,6 +522,13 @@ function readStorageLoad(storage: StoragePort): { ok: true; records: readonly Lo
 		records.push({ line: entry.line, record: entry.record });
 	}
 	return { ok: true, records };
+}
+
+/** The number of Unicode code points in a string, as it iterates: a surrogate pair is one, and a lone surrogate one (EM7). */
+function codePointLength(text: string): number {
+	let count = 0;
+	for (const _ of text) count++;
+	return count;
 }
 
 function requireWrite(write: WriteContext): void {

@@ -8,8 +8,8 @@
  */
 import type { JsonInput } from "@apnex/shape-check";
 
-/** The operations a session calls, by the names entity-api serves them under (EM10). */
-export type SuiteOperation = "create" | "update" | "delete" | "read" | "find" | "history-bound";
+/** The operations a session calls, by the names entity-api serves them under (EM10, EM16). */
+export type SuiteOperation = "create" | "update" | "delete" | "read" | "find" | "history-bound" | "changes";
 
 /** How a call ended: answered with the operation's answer, or refused with the refusal record (EM9). */
 export type SuiteOutcome =

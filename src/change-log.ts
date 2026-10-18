@@ -8,7 +8,7 @@
  * each change makes its write identity name it, and every time advances the store's time (EM8).
  */
 import type { JsonObject, JsonValue } from "@apnex/shape-check";
-import type { ChangeRecord, EntityEnvelope, LoadedRecord, WriteAnswer } from "./store-types.js";
+import type { ChangeItem, ChangeRecord, DeletedItem, EntityEnvelope, LoadedRecord, WriteAnswer } from "./store-types.js";
 
 /** True for a JSON object, false for null, arrays and scalars. */
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -57,9 +57,12 @@ export class RecoveredState {
 	readonly writes = new Map<string, RememberedWrite>();
 	/** The time of each change, by position; index 0 is unused. */
 	readonly changeTimes: number[] = [Number.NaN];
+	/** What `changes` gives of each change, by position (EM16): one item per write, in the order the change made them; index 0 is unused. */
+	readonly changeItems: ChangeItem[][] = [[]];
 
-	/** Applies a change: its writes in order, its write identity, its position and its time. */
+	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
 	apply(record: ChangeRecord, atMs: number): void {
+		const items: ChangeItem[] = [];
 		for (const write of record.writes) {
 			const versions = this.history.get(write.id) ?? [];
 			const previous = versions[versions.length - 1]?.entity ?? null;
@@ -69,12 +72,14 @@ export class RecoveredState {
 				if (kindNames === undefined) this.names.set(write.entity.kind, (kindNames = new Map()));
 				kindNames.set(write.entity.name, write.id);
 			}
+			items.push(write.entity ?? deletedItem(write.id, previous, versions.length, record));
 			versions.push({ position: record.position, entity: write.entity });
 			this.history.set(write.id, versions);
 		}
 		this.writes.set(record.writeId, { position: record.position, at: atMs, digest: record.digest, answer: record.answer });
 		this.position = record.position;
 		this.changeTimes[record.position] = atMs;
+		this.changeItems[record.position] = items;
 		this.latestAt = Math.max(this.latestAt, atMs);
 	}
 
@@ -104,6 +109,20 @@ export class RecoveredState {
 		}
 		return found.sort((a, b) => compareCodePoints(a.name, b.name));
 	}
+}
+
+/**
+ * The item a delete leaves (EM16): the entity's identity, kind and name as the delete found them and the
+ * revision the delete gave it, taken from the state the delete's write replaced and never from the change's
+ * answer, then the change's position, time and writer. A delete of an entity with no state before it is
+ * found only in a change log the store did not write (EM15), which is outside what it promises; its item
+ * then names an empty kind and name.
+ */
+function deletedItem(id: string, previous: EntityEnvelope | null, versions: number, record: ChangeRecord): DeletedItem {
+	const deleted = previous === null
+		? { id, kind: "", name: "", revision: versions + 1 }
+		: { id, kind: previous.kind, name: previous.name, revision: previous.revision + 1 };
+	return { deleted, position: record.position, at: record.at, writer: record.writer };
 }
 
 type Check = string | undefined;

@@ -19,6 +19,11 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 		why: "A write identity names one request while its change is within the history bound, so a repeat must be the same request from the same writer.",
 		fix: "Send the request the identity was first used for, or give this request a new write identity.",
 	},
+	"writer-too-long": {
+		what: "The writer is longer than 1024 Unicode code points.",
+		why: "Every change must fit one page of changes, and the change a delete makes carries its writer whole.",
+		fix: "Name the writer in at most 1024 code points.",
+	},
 	"unknown-kind": {
 		what: "The kind is not one this store was given.",
 		why: "The store keeps only the kinds the application declared when it opened the store.",
@@ -26,13 +31,13 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 	},
 	"invalid-position": {
 		what: "The position is below 0 or above the store's position.",
-		why: "A find answers as of a position from 0, the empty store, to the store's own position.",
-		fix: "Ask as of a position from 0 to the store's position, or name none to ask as of the store's position.",
+		why: "A find answers as of, and changes are given after, a position from 0, the empty store, to the store's own position.",
+		fix: "Name a position from 0 to the store's position; a find may name none, to ask as of the store's position.",
 	},
 	"position-not-held": {
 		what: "The position is no longer held.",
-		why: "The change after that position is outside the history bound, so the store cannot answer as of it.",
-		fix: "Ask again as of the store's position, naming no position.",
+		why: "The change after that position is outside the history bound, so the store can neither answer as of it nor give the changes after it.",
+		fix: "Read the current state afresh, as of the store's position, and carry on from that position.",
 	},
 	"invalid-target": {
 		what: "The target is neither exactly an identity nor exactly a kind and a name.",

@@ -42,6 +42,7 @@ export function createLocalHarness({ storage = "memory", writer = "alice" } = {}
 						case "read": return store.read(input);
 						case "find": return store.find(input);
 						case "history-bound": return store.historyBound();
+						case "changes": return store.changes(input);
 						default: throw new Error(`no operation ${operation}`);
 					}
 				},
