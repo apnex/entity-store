@@ -1,6 +1,6 @@
 # entity-store - Vision
 
-**Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
+**Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`), amended 2026-10-18 (`D65`); enduring.**\
 This document states why entity-store exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
@@ -91,7 +91,7 @@ No kind is built in.
 
 **Not an authority.**\
 It does not decide who may write; the application decides before it calls.\
-It records the writer the application names, and never checks it.
+It records the writer the application names, and never checks who it names; it refuses only a writer too long for every change to fit one page of catching up.
 
 ---
 
