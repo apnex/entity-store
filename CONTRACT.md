@@ -57,7 +57,7 @@ When independent actors write the same store, the system holding it is also mult
 
 This repository, `apnex/entity-store`, private until its first working code is certified.\
 The package `@apnex/entity-store` exports `openEntityStore` and `createMemoryStoragePort`, `@apnex/entity-store/file-storage` exports `createFileStoragePort` and `LOG_HEADER`, and `@apnex/entity-store/contract-suite` exports `registerEntityStoreSuite` and `contractSuiteRows`, the shared contract suite, as `export-map.json` records.\
-`changes-since-position` is served through `openEntityStore` as `changes` and carried by the shared contract suite, built in zorg's Delta 4 under `D64`; `follow-narrowed-set` is deferred under zorg's `D15` until that delta builds it.\
+`changes-since-position` is served through `openEntityStore` as `changes`, and `follow-narrowed-set` as `follow` and `waitForChange`, each carried by the shared contract suite, built in zorg's Delta 4 under `D64` (zorg's target, `EM16` and `EM17`); the suite's cases of `follow` judge the items and `through` across pages, so entity-api runs them remotely, and the exact pages and `waitForChange` are this component's own tests.\
 It depends on `@apnex/shape-check` through a `file:` link, and only its file storage port, `src/file-storage-adapter.ts`, imports a module particular to one runtime.
 
 ---
