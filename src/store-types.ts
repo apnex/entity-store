@@ -119,6 +119,45 @@ export interface ChangesAnswer {
 	next: number | null;
 }
 
+/** The input of `follow` (EM17): a kind, a set of tags, and the position after which every change is followed. */
+export interface FollowInput {
+	kind: string;
+	tags?: string[];
+	since: number;
+}
+
+/** What a write did to the set `follow` narrows (EM17). */
+export type FollowEvent = "entering" | "changing" | "leaving";
+
+/**
+ * One item of `follow` (EM17): the event, the change's position, time and writer, the entity's identity, and the
+ * envelope as the change left it, or null when the change left the entity deleted.
+ */
+export interface FollowItem {
+	event: FollowEvent;
+	position: number;
+	at: string;
+	writer: string;
+	id: string;
+	entity: EntityEnvelope | null;
+}
+
+/**
+ * One page of `follow` (EM17): the store's position when it answered, the position of the last change the page
+ * took, and the items of the changes it took.
+ */
+export interface FollowAnswer {
+	position: number;
+	through: number;
+	changes: FollowItem[];
+}
+
+/** The options of `waitForChange` (EM17). */
+export interface WaitOptions {
+	/** Rejects the wait with its reason when it fires. */
+	signal?: AbortSignal;
+}
+
 /** The answer to `history-bound`. */
 export interface HistoryBoundAnswer {
 	position: number;
@@ -286,6 +325,10 @@ export interface EntityStore {
 	historyBound(): StoreOutcome<HistoryBoundAnswer>;
 	/** Gives the changes after a position the store still holds, one page at a time (EM16). */
 	changes(input: ChangesInput): StoreOutcome<ChangesAnswer>;
+	/** Follows the entities of a kind carrying a set of tags from a position, one page at a time (EM17). */
+	follow(input: FollowInput): StoreOutcome<FollowAnswer>;
+	/** Resolves with the store's position once it is above `after` (EM17). */
+	waitForChange(after: number, options?: WaitOptions): Promise<number>;
 	/** Says whether a write is a recognised repeat, without making it (EM13, step 2). */
 	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck;
 }

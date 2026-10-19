@@ -1,5 +1,5 @@
 /**
- * The input shapes of the store's operations, exactly as EM10 and EM16 declare them, in shape-check's dialect.
+ * The input shapes of the store's operations, exactly as EM10, EM16 and EM17 declare them, in shape-check's dialect.
  * Remotely, operation-call judges an input against these before the store sees it; locally, the store
  * judges each input against them and throws a TypeError for one that does not fit, since a local caller
  * passing a malformed input has made a programming error, for which EM9 names no refusal.
@@ -9,7 +9,7 @@ import { prepareShapeDocument, SHAPE_DIALECT_ID, type JsonInput, type ShapeMisfi
 const target = { type: "object", additionalProperties: false, properties: { id: { type: "string" }, kind: { type: "string" }, name: { type: "string" } } };
 const tags = { type: "array", items: { type: "string" } };
 
-/** EM10's input shapes, by operation, and EM16's for `changes`. */
+/** EM10's input shapes, by operation, EM16's for `changes` and EM17's for `follow`. */
 export const OPERATION_INPUT_SHAPES = {
 	create: { type: "object", required: ["kind", "name", "tags", "body"], additionalProperties: false, properties: { kind: { type: "string" }, name: { type: "string" }, tags, body: {} } },
 	update: { type: "object", required: ["target"], additionalProperties: false, properties: { target, expectedRevision: { type: "integer" }, name: { type: "string" }, tags, body: {} } },
@@ -17,6 +17,7 @@ export const OPERATION_INPUT_SHAPES = {
 	read: { type: "object", required: ["target"], additionalProperties: false, properties: { target } },
 	find: { type: "object", required: ["kind"], additionalProperties: false, properties: { kind: { type: "string" }, tags, after: { type: "string" }, asOf: { type: "integer" } } },
 	changes: { type: "object", required: ["since"], additionalProperties: false, properties: { since: { type: "integer" } } },
+	follow: { type: "object", required: ["kind", "since"], additionalProperties: false, properties: { kind: { type: "string" }, tags, since: { type: "integer" } } },
 } as const;
 
 export type InputOperation = keyof typeof OPERATION_INPUT_SHAPES;

@@ -3,14 +3,16 @@
  * and the consumer's test registration, which registers every case for the rows entity-api carries, so
  * entity-api runs the same cases remotely and entity-store's own contract tests run them locally.
  *
- * The storage-port row runs locally only, in entity-store's own tests, and follow-narrowed-set is deferred
- * by zorg's D15 until Delta 4's stage 5 builds it. Nothing here is particular to one runtime (D31).
+ * The storage-port row runs locally only, in entity-store's own tests. The cases of follow-narrowed-set judge the
+ * items and `through` across pages and keep within the input shape entity-api serves `follow` under, so they run
+ * remotely too (zorg's target, EM17). Nothing here is particular to one runtime (D31).
  */
 import { changeProvenanceCases } from "./suite/change-provenance-cases.js";
 import { changesSincePositionCases } from "./suite/changes-since-position-cases.js";
 import { entityLimitCases } from "./suite/entity-limit-cases.js";
 import { expectedRevisionWriteCases } from "./suite/expected-revision-write-cases.js";
 import { findByKindTagsCases } from "./suite/find-by-kind-tags-cases.js";
+import { followNarrowedSetCases } from "./suite/follow-narrowed-set-cases.js";
 import { identityNameLookupCases } from "./suite/identity-name-lookup-cases.js";
 import { positionedEntityWriteCases } from "./suite/positioned-entity-write-cases.js";
 import { repeatRecognitionCases } from "./suite/repeat-recognition-cases.js";
@@ -29,6 +31,7 @@ const CASES: { readonly [row: string]: readonly SuiteCase[] } = {
 	"identity-name-lookup": identityNameLookupCases,
 	"find-by-kind-tags": findByKindTagsCases,
 	"changes-since-position": changesSincePositionCases,
+	"follow-narrowed-set": followNarrowedSetCases,
 	"stated-history-bound": statedHistoryBoundCases,
 	"store-refusal": [...storeRefusalCases, ...entityLimitCases],
 };
@@ -37,7 +40,7 @@ const CASES: { readonly [row: string]: readonly SuiteCase[] } = {
 export const contractSuiteRows = Object.freeze({
 	carried: Object.freeze(Object.keys(CASES)),
 	localOnly: Object.freeze(["storage-port", "declared-shape-validation"]),
-	deferred: Object.freeze({ "follow-narrowed-set": "D15" }),
+	deferred: Object.freeze({}),
 });
 
 /**

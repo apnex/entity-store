@@ -59,6 +59,8 @@ export class RecoveredState {
 	readonly changeTimes: number[] = [Number.NaN];
 	/** What `changes` gives of each change, by position (EM16): one item per write, in the order the change made them; index 0 is unused. */
 	readonly changeItems: ChangeItem[][] = [[]];
+	/** Each change's time and writer as recorded, and the identity each of its writes wrote, in order (EM17); index 0 is unused. */
+	readonly changeStamps: { at: string; writer: string; ids: string[] }[] = [{ at: "", writer: "", ids: [] }];
 
 	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
 	apply(record: ChangeRecord, atMs: number): void {
@@ -80,6 +82,7 @@ export class RecoveredState {
 		this.position = record.position;
 		this.changeTimes[record.position] = atMs;
 		this.changeItems[record.position] = items;
+		this.changeStamps[record.position] = { at: record.at, writer: record.writer, ids: record.writes.map((write) => write.id) };
 		this.latestAt = Math.max(this.latestAt, atMs);
 	}
 
@@ -94,6 +97,22 @@ export class RecoveredState {
 	/** The time of the change at a position. */
 	changeAt(position: number): number {
 		return this.changeTimes[position] as number;
+	}
+
+	/**
+	 * An entity's state before the change at a position and after it (EM17): its latest version written before
+	 * that position, and its latest version written at or before it, each null when there is none or it is deleted.
+	 */
+	aroundChange(id: string, position: number): { before: EntityEnvelope | null; after: EntityEnvelope | null } {
+		const versions = this.history.get(id) ?? [];
+		let before: EntityEnvelope | null = null;
+		let after: EntityEnvelope | null = null;
+		for (const version of versions) {
+			if (version.position > position) break;
+			if (version.position < position) before = version.entity;
+			after = version.entity;
+		}
+		return { before, after };
 	}
 
 	/** Every entity of a kind as of a position: each one's latest version at or before it, if not deleted. */

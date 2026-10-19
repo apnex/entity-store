@@ -1,6 +1,7 @@
 /**
  * The store: entities of the kinds an application gives it, in one order of changes (EM1 to EM10, EM15),
- * and the changes after a position the store still holds (EM16).
+ * the changes after a position the store still holds (EM16), and a narrowed set followed from such a position,
+ * with a wait for the next change (EM17).
  *
  * Every operation runs to completion, synchronously, before the next begins, so changes are applied one at
  * a time. A change is appended to the storage port before any read sees it or its answer is returned; a
@@ -38,6 +39,10 @@ import type {
 	EntityStore,
 	FindAnswer,
 	FindInput,
+	FollowAnswer,
+	FollowEvent,
+	FollowInput,
+	FollowItem,
 	HistoryBoundAnswer,
 	LoadedRecord,
 	LogRecord,
@@ -51,6 +56,7 @@ import type {
 	StoreOutcome,
 	StoreRefusal,
 	UpdateInput,
+	WaitOptions,
 	WriteAnswer,
 	WriteContext,
 	WriteOperation,
@@ -162,9 +168,18 @@ function iso(ms: number): string {
 	return new Date(ms).toISOString();
 }
 
+/** A wait of `waitForChange` (EM17), held only while it waits. */
+interface Wait {
+	readonly after: number;
+	/** Settles it, dropping it and its signal's listener first. */
+	settle(position: number | undefined, error?: unknown): void;
+}
+
 class Store implements EntityStore {
 	#stopped: unknown = undefined;
 	#isStopped = false;
+	/** The waits of `waitForChange` still waiting (EM17). */
+	readonly #waits = new Set<Wait>();
 
 	constructor(
 		private readonly storage: StoragePort,
@@ -198,8 +213,16 @@ class Store implements EntityStore {
 		} catch (cause) {
 			this.#isStopped = true;
 			this.#stopped = cause;
+			// Every wait rejects with the store's store-stopped error (EM17).
+			for (const wait of [...this.#waits]) wait.settle(undefined, stoppedError(cause));
 			throw stoppedError(cause);
 		}
+	}
+
+	/** Resolves every wait whose `after` the store's position has passed, before the write returns (EM17). */
+	#wake(): void {
+		const position = this.state.position;
+		for (const wait of [...this.#waits]) if (position > wait.after) wait.settle(position);
 	}
 
 	// Before any decision about retention, the store's time reaches the change log (EM8).
@@ -274,6 +297,7 @@ class Store implements EntityStore {
 		};
 		this.#append(record);
 		this.state.apply(record, planned.atMs);
+		this.#wake();
 		return { outcome: "answered", answer: cloneValue(planned.answer) };
 	}
 
@@ -448,6 +472,105 @@ class Store implements EntityStore {
 			last = position;
 		}
 		return { outcome: "answered", answer: { position: current, changes, next: last < current ? last : null } };
+	}
+
+	// One page of `follow` (EM17): the stopped store, then the input's shape, then the kind, then `since` as
+	// `changes` checks it; then the changes after `since` taken in order, each whole, a change giving no item
+	// never stopping the page, and the page stopping before the first change giving items that does not fit
+	// within 524288 bytes once it holds any; `through` is the last change taken.
+	follow(rawInput: FollowInput): StoreOutcome<FollowAnswer> {
+		this.#alive();
+		const input = snapshotInput(rawInput) as unknown as FollowInput;
+		requireInputShape("follow", input);
+		const unknown = this.#unknownKind(input.kind);
+		if (unknown) return { outcome: "refused", refusal: unknown };
+		const current = this.state.position;
+		const since = input.since;
+		if (since < 0 || since > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: since, current }) };
+		if (since < current) {
+			const now = this.#timeForDecision(this.#now());
+			if (!this.#within(this.state.changeAt(since + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+		}
+		// The tags are a set and not judged: more than 32 distinct tags, or one no entity can carry, match nothing (EM2).
+		const wanted = [...new Set(input.tags ?? [])];
+		const inSet = (entity: EntityEnvelope | null): boolean =>
+			entity !== null && entity.kind === input.kind && wanted.length <= LIMITS.tags && wanted.every((tag) => entity.tags.includes(tag));
+		const changes: FollowItem[] = [];
+		let bytes = 2;
+		let through = since;
+		for (let position = since + 1; position <= current; position++) {
+			const items = this.#followItems(position, input.kind, inSet);
+			if (items.length > 0) {
+				// Every item but the page's first is preceded by a comma.
+				let size = changes.length === 0 ? -1 : 0;
+				for (const item of items) size += canonicalSize(item as unknown as JsonValue) + 1;
+				if (changes.length > 0 && bytes + size > LIMITS.pageBytes) break;
+				bytes += size;
+				for (const item of items) changes.push(cloneValue(item));
+			}
+			through = position;
+		}
+		return { outcome: "answered", answer: { position: current, through, changes } };
+	}
+
+	/**
+	 * The items one change gives a follow (EM17): for each of its writes whose entity is of `kind`, in order, the
+	 * entity's state before the whole change compared with its state after it.
+	 */
+	#followItems(position: number, kind: string, inSet: (entity: EntityEnvelope | null) => boolean): FollowItem[] {
+		const stamp = this.state.changeStamps[position] as { at: string; writer: string; ids: string[] };
+		const items: FollowItem[] = [];
+		for (const id of stamp.ids) {
+			const { before, after } = this.state.aroundChange(id, position);
+			if ((before ?? after)?.kind !== kind) continue;
+			const was = inSet(before);
+			const is = inSet(after);
+			const event: FollowEvent | undefined = !was && is ? "entering" : was && is ? "changing" : was && !is ? "leaving" : undefined;
+			if (event === undefined) continue;
+			items.push({ event, position, at: stamp.at, writer: stamp.writer, id, entity: after });
+		}
+		return items;
+	}
+
+	// A wait for the next change (EM17): the stopped store, then the arguments, then the signal, then the position.
+	waitForChange(after: number, options?: WaitOptions): Promise<number> {
+		this.#alive();
+		if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) throw new TypeError("waitForChange needs after, a whole number from 0 to 9007199254740991");
+		if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) throw new TypeError("waitForChange's options are omitted or an object holding an optional signal");
+		const signal: unknown = options?.signal;
+		if (signal !== undefined) {
+			const candidate = signal as { aborted?: unknown; addEventListener?: unknown; removeEventListener?: unknown };
+			if (signal === null || typeof signal !== "object" || typeof candidate.aborted !== "boolean" || typeof candidate.addEventListener !== "function" || typeof candidate.removeEventListener !== "function") {
+				throw new TypeError("waitForChange's signal must be an abort signal: aborted a boolean, with addEventListener and removeEventListener");
+			}
+		}
+		const abort = signal as AbortSignal | undefined;
+		if (abort?.aborted === true) return Promise.reject(abort.reason);
+		if (this.state.position > after) return Promise.resolve(this.state.position);
+		let resolve: (position: number) => void = () => undefined;
+		let reject: (error: unknown) => void = () => undefined;
+		const promise = new Promise<number>((res, rej) => { resolve = res; reject = rej; });
+		let settled = false;
+		const onAbort = (): void => wait.settle(undefined, abort?.reason);
+		const wait: Wait = {
+			after,
+			settle: (position, error) => {
+				if (settled) return;
+				settled = true;
+				this.#waits.delete(wait);
+				try {
+					abort?.removeEventListener("abort", onAbort);
+				} catch {
+					// A signal that cannot remove its listener leaves it to find the wait settled.
+				}
+				if (position === undefined) reject(error);
+				else resolve(position);
+			},
+		};
+		// A throw from adding the listener is thrown, with no wait held.
+		abort?.addEventListener("abort", onAbort, { once: true });
+		this.#waits.add(wait);
+		return promise;
 	}
 }
 
