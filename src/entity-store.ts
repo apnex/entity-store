@@ -567,9 +567,16 @@ class Store implements EntityStore {
 				else resolve(position);
 			},
 		};
-		// A throw from adding the listener is thrown, with no wait held.
-		abort?.addEventListener("abort", onAbort, { once: true });
+		// The wait is held before its listener is added, so a signal that fires as the listener is added settles,
+		// and drops, a wait already held; a throw from adding the listener drops it and is thrown, no wait held.
 		this.#waits.add(wait);
+		try {
+			abort?.addEventListener("abort", onAbort, { once: true });
+		} catch (error) {
+			settled = true;
+			this.#waits.delete(wait);
+			throw error;
+		}
 		return promise;
 	}
 }

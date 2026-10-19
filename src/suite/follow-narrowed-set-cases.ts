@@ -90,7 +90,7 @@ export const followNarrowedSetCases: SuiteCase[] = [
 		}),
 	},
 	{
-		name: "a follow naming no tags follows every entity of the kind; a tag named twice is named once; a tag no entity carries matches nothing while through advances; 32 tags are a set like any other",
+		name: "a follow naming no tags follows every entity of the kind; a tag named twice is named once; a tag no entity carries, and one no entity can carry, match nothing while through advances; 32 tags are a set like any other",
 		run: (h) => withStore(h, {}, async (s) => {
 			const a = (await create(s, note("alpha", ["topic:a"]))).entity;
 			const b = (await create(s, note("beta", []))).entity;
@@ -101,6 +101,8 @@ export const followNarrowedSetCases: SuiteCase[] = [
 			same(twice.items, [item("entering", a.created, a.id, a)], "a tag named twice is named once");
 			const none = await followAll(s, { kind: "note", tags: ["topic:nothing"], since: 0 }, "a tag no entity carries");
 			same([none.items, none.through], [[], 3], "nothing, and through at the store's position");
+			const impossible = await followAll(s, { kind: "note", tags: ["Not A Tag!"], since: 0 }, "a tag no entity can carry");
+			same([impossible.items, impossible.through], [[], 3], "a tag breaking EM2's pattern is not judged, matches nothing, and through still advances");
 			const many = Array.from({ length: 32 }, (_, i) => `k${i}:v`);
 			const full = (await create(s, note("full", many))).entity;
 			const thirtyTwo = await followAll(s, { kind: "note", tags: [...many].reverse(), since: 3 }, "32 tags");

@@ -14,6 +14,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { toCanonicalJson } from "@apnex/shape-check";
 import { createMemoryStoragePort, openEntityStore } from "@apnex/entity-store";
 import { registerEntityStoreSuite } from "@apnex/entity-store/contract-suite";
@@ -30,6 +32,40 @@ const bytes = (value) => Buffer.byteLength(toCanonicalJson(value), "utf8");
 let writes = 0;
 const write = (writer, writeId = `w-${++writes}`) => ({ writer, writeId });
 const turns = async (n = 5) => { for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve)); };
+
+// The garbage collector, so a test can see that nothing the store holds keeps a settled wait's signal alive.
+v8.setFlagsFromString("--expose-gc");
+const gc = vm.runInNewContext("gc");
+
+/** True once the object a weak reference names has been collected, the collector run between turns. */
+async function collected(weak) {
+	for (let i = 0; i < 30; i++) {
+		await turns(2);
+		gc();
+		if (weak.deref() === undefined) return true;
+	}
+	return false;
+}
+
+/** A signal of plain methods, which fires its listeners when `fire` is called, holding nothing else. */
+function plainSignal({ fireOnAdd = false } = {}) {
+	const listeners = new Set();
+	const signal = {
+		aborted: false,
+		reason: undefined,
+		addEventListener(_type, listener) {
+			listeners.add(listener);
+			if (fireOnAdd) signal.fire(new Error("fired as its listener was added"));
+		},
+		removeEventListener(_type, listener) { listeners.delete(listener); },
+		fire(reason) {
+			signal.aborted = true;
+			signal.reason = reason;
+			for (const listener of [...listeners]) listener();
+		},
+	};
+	return signal;
+}
 
 /** Opens a store over a storage port that must open. */
 function open(storage, { time = T0, clock, historyMs = 60_000, maxEntityBytes = 65_536 } = {}) {
@@ -164,6 +200,23 @@ test("local, file port: recovered changes of several writes give an item per wri
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("local: a recovered change of several writes whose first item alone would fit beside the page's items, and whose items together would not, is not split: the page stops before it, and the next takes it whole", () => {
+	const storage = createMemoryStoragePort();
+	const yes = ["set:yes"];
+	const big = (id, name, position, summary) => envelope(id, name, position, { tags: yes, summary: "s".repeat(summary) });
+	const first = big("e1.1", "first", 1, 300_000);
+	const left = big("e2.1", "left", 2, 150_000);
+	const right = big("e2.2", "right", 2, 150_000);
+	storage.append(change(1, [{ operation: "create", id: "e1.1", entity: first }]));
+	storage.append(change(2, [{ operation: "create", id: "e2.1", entity: left }, { operation: "create", id: "e2.2", entity: right }]));
+	const store = open(storage);
+	const one = item("entering", 1, "e1.1", first);
+	const two = [item("entering", 2, "e2.1", left), item("entering", 2, "e2.2", right)];
+	assert.ok(bytes([one, two[0]]) <= PAGE && bytes([one, ...two]) > PAGE, "its first item alone fits beside the page's, both together do not");
+	assert.deepEqual(store.follow({ kind: "note", tags: yes, since: 0 }).answer, { position: 2, through: 1, changes: [one] }, "the page stops before change 2");
+	assert.deepEqual(store.follow({ kind: "note", tags: yes, since: 1 }).answer, { position: 2, through: 2, changes: two }, "and the next takes it whole");
 });
 
 test("local: a change recovered from a log written before the writer bound, larger than a page, is given alone in its page, past the page's size, and not skipped", () => {
@@ -403,6 +456,57 @@ test("local: a wait once settled holds no listener; the store holds a wait only 
 	store.create(note("beta"), write("alice"));
 	await turns();
 	assert.equal(await store.waitForChange(1), 2, "an aborted wait was dropped; a new one resolves at once");
+});
+
+test("local: nothing the store holds keeps a settled wait - resolved by a change, rejected by its signal, by a signal firing as its listener is added, or by a failed append - its signal collected while the store lives on", async () => {
+	const memory = createMemoryStoragePort();
+	let failing = false;
+	const storage = { load: () => memory.load(), append: (record) => { if (failing) throw new Error("disk full"); memory.append(record); } };
+	const store = open(storage);
+	store.create(note("alpha"), write("alice"));
+	const settledBy = {
+		async change() {
+			const signal = plainSignal();
+			const waiting = store.waitForChange(store.read({ target: { id: "e1.1" } }).answer.position, { signal });
+			store.create(note(`n-${++writes}`), write("alice"));
+			await waiting;
+			return new WeakRef(signal);
+		},
+		async signal() {
+			const signal = plainSignal();
+			const waiting = store.waitForChange(1_000_000, { signal });
+			signal.fire(new Error("stop"));
+			await waiting.catch(() => undefined);
+			return new WeakRef(signal);
+		},
+		async "signal firing as its listener is added"() {
+			const signal = plainSignal({ fireOnAdd: true });
+			await store.waitForChange(1_000_000, { signal }).catch(() => undefined);
+			return new WeakRef(signal);
+		},
+		async "throw from adding its listener"() {
+			const signal = plainSignal();
+			signal.addEventListener = () => { throw new Error("cannot listen"); };
+			try {
+				store.waitForChange(1_000_000, { signal });
+			} catch {
+				// Thrown, with no wait held.
+			}
+			return new WeakRef(signal);
+		},
+	};
+	for (const [how, settle] of Object.entries(settledBy)) assert.ok(await collected(await settle()), `a wait settled by a ${how} is not held`);
+	// The signal made in a function of its own, so no binding here keeps it.
+	const start = () => {
+		const signal = plainSignal();
+		return { waiting: store.waitForChange(1_000_000, { signal }).catch(() => undefined), weak: new WeakRef(signal) };
+	};
+	const { waiting, weak } = start();
+	failing = true;
+	assert.throws(() => store.create(note("omega"), write("alice")), (e) => e?.code === "store-stopped");
+	await waiting;
+	assert.ok(await collected(weak), "a wait rejected by a failed append is not held");
+	assert.throws(() => store.waitForChange(0), (e) => e?.code === "store-stopped", "the store lives on, stopped");
 });
 
 test("local: waitForChange on a stopped store throws store-stopped", () => {
