@@ -464,6 +464,40 @@ test("local: a throw from adding the listener after the signal added it leaves n
 	}
 });
 
+test("local: a wait settled while its signal is adding the listener - by a change, by the signal firing, or by a failed append, each before the signal adds it - leaves no listener on the signal once it is added", async () => {
+	const memory = createMemoryStoragePort();
+	let failing = false;
+	const storage = { load: () => memory.load(), append: (record) => { if (failing) throw new Error("disk full"); memory.append(record); } };
+	const store = open(storage);
+	/** A native signal whose addEventListener runs `before` and only then adds the listener. */
+	const delaying = (before) => {
+		const controller = new AbortController();
+		const signal = controller.signal;
+		const add = signal.addEventListener.bind(signal);
+		signal.addEventListener = (type, listener, options) => { before(controller); add(type, listener, options); };
+		return signal;
+	};
+	const byChange = delaying(() => store.create(note(`c-${++writes}`), write("alice")));
+	assert.equal(await store.waitForChange(0, { signal: byChange }), 1, "the change made as the listener was added settles the wait");
+	assert.equal(getEventListeners(byChange, "abort").length, 0, "by a change: no listener left");
+	const reason = new Error("fired before it added the listener");
+	const byFiring = delaying((controller) => controller.abort(reason));
+	// Raced with a second of real time, so a wait the store never settles fails the case rather than hanging it.
+	const stillWaiting = new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1000).unref());
+	await assert.rejects(Promise.race([store.waitForChange(5, { signal: byFiring }), stillWaiting]), (e) => e === reason, "the signal fired before it added the listener: the wait rejects with its reason");
+	assert.equal(getEventListeners(byFiring, "abort").length, 0, "by the signal firing: no listener left");
+	const byFailure = delaying(() => {
+		failing = true;
+		try {
+			store.create(note(`f-${++writes}`), write("alice"));
+		} catch {
+			// The store stops.
+		}
+	});
+	await assert.rejects(store.waitForChange(5, { signal: byFailure }), (e) => e?.code === "store-stopped");
+	assert.equal(getEventListeners(byFailure, "abort").length, 0, "by a failed append: no listener left");
+});
+
 test("local: a wait once settled holds no listener; the store holds a wait only while it waits", async () => {
 	const { store } = openLocal();
 	let listeners = 0;

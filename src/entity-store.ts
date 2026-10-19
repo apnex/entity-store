@@ -590,6 +590,17 @@ class Store implements EntityStore {
 			promise.catch(() => undefined);
 			throw error;
 		}
+		// A signal that fired while it was adding the listener, before it added it, never calls it: the wait rejects
+		// with its reason now. A wait settled while its listener was being added - by a change, its signal or a failed
+		// append made as the signal added it - removed the listener before it was added; it is removed again now.
+		if (!settled && (abort as { readonly aborted: boolean } | undefined)?.aborted === true) wait.settle(undefined, abort?.reason);
+		if (settled) {
+			try {
+				abort?.removeEventListener("abort", onAbort);
+			} catch {
+				// A signal that cannot remove its listener leaves it to find the wait settled.
+			}
+		}
 		return promise;
 	}
 }
