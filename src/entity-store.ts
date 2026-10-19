@@ -515,12 +515,17 @@ class Store implements EntityStore {
 
 	/**
 	 * The items one change gives a follow (EM17): for each of its writes whose entity is of `kind`, in order, the
-	 * entity's state before the whole change compared with its state after it.
+	 * entity's state before the whole change compared with its state after it. The identity, time and writer come
+	 * from the items `changes` already keeps for the change - an envelope's `changed`, or what a delete left - so
+	 * following keeps nothing more.
 	 */
 	#followItems(position: number, kind: string, inSet: (entity: EntityEnvelope | null) => boolean): FollowItem[] {
-		const stamp = this.state.changeStamps[position] as { at: string; writer: string; ids: string[] };
 		const items: FollowItem[] = [];
-		for (const id of stamp.ids) {
+		for (const written of this.state.changeItems[position] as ChangeItem[]) {
+			const stamp = "deleted" in written
+				? { id: written.deleted.id, at: written.at, writer: written.writer }
+				: { id: written.id, at: written.changed.at, writer: written.changed.writer };
+			const id = stamp.id;
 			const { before, after } = this.state.aroundChange(id, position);
 			if ((before ?? after)?.kind !== kind) continue;
 			const was = inSet(before);
@@ -568,13 +573,21 @@ class Store implements EntityStore {
 			},
 		};
 		// The wait is held before its listener is added, so a signal that fires as the listener is added settles,
-		// and drops, a wait already held; a throw from adding the listener drops it and is thrown, no wait held.
+		// and drops, a wait already held. A throw from adding the listener drops the wait and removes the listener,
+		// which the signal may have added before it threw, and the promise, never returned, is observed, so a
+		// rejection the signal gave it as it fired is not left unhandled; the throw is then thrown.
 		this.#waits.add(wait);
 		try {
 			abort?.addEventListener("abort", onAbort, { once: true });
 		} catch (error) {
 			settled = true;
 			this.#waits.delete(wait);
+			try {
+				abort?.removeEventListener("abort", onAbort);
+			} catch {
+				// A signal that cannot remove its listener leaves it to find the wait settled.
+			}
+			promise.catch(() => undefined);
 			throw error;
 		}
 		return promise;

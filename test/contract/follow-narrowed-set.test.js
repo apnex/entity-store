@@ -10,6 +10,7 @@
 // readings of deciding whether a position is held; inputs that do not fit the operation's shape; and
 // `waitForChange`, which no remote operation serves.
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -424,15 +425,43 @@ test("local: waitForChange reads its signal once; a throw from adding its listen
 	let removed = 0;
 	const throwing = { aborted: false, addEventListener() { throw sentinel; }, removeEventListener() { removed++; } };
 	assert.throws(() => store.waitForChange(5, { signal: throwing }), (e) => e === sentinel, "the throw, synchronously");
+	assert.equal(removed, 1, "the listener the signal may have added is removed as the throw is thrown");
 	store.create(note("gamma"), write("alice"));
 	for (let i = 0; i < 4; i++) store.create(note(`n${i}`), write("alice"));
 	await turns();
-	assert.equal(removed, 0, "no wait was held, so no change settled one");
+	assert.equal(removed, 1, "no wait was held, so no change settled one");
 	const fired = new AbortController();
 	fired.abort(new Error("already"));
 	assert.throws(() => store.waitForChange(-1, { signal: fired.signal }), TypeError, "a malformed after before a signal already fired");
 	assert.throws(() => store.waitForChange(0.5), TypeError, "a malformed after before a position already passed");
 	assert.throws(() => store.waitForChange(0, { signal: { aborted: true } }), TypeError, "a malformed signal, though its aborted is true");
+});
+
+test("local: a throw from adding the listener after the signal added it leaves no listener on the signal; one after the signal fired as it was added leaves no rejection unhandled; each throw is thrown", async () => {
+	const { store } = openLocal();
+	const registered = new AbortController();
+	const native = registered.signal;
+	const sentinel = new Error("added, then threw");
+	const add = native.addEventListener.bind(native);
+	native.addEventListener = (type, listener, options) => { add(type, listener, options); throw sentinel; };
+	assert.throws(() => store.waitForChange(5, { signal: native }), (e) => e === sentinel, "the throw, synchronously");
+	assert.equal(getEventListeners(native, "abort").length, 0, "the listener the signal added is removed");
+	store.create(note("alpha"), write("alice"));
+	assert.equal(getEventListeners(native, "abort").length, 0, "and stays removed");
+	const unhandled = [];
+	const record = (reason) => unhandled.push(reason);
+	process.on("unhandledRejection", record);
+	try {
+		const reason = new Error("fired as its listener was added");
+		const thrown = new Error("then threw");
+		const firing = { aborted: false, reason, addEventListener(_type, listener) { firing.aborted = true; listener(); throw thrown; }, removeEventListener() {} };
+		assert.throws(() => store.waitForChange(5, { signal: firing }), (e) => e === thrown, "the throw, synchronously");
+		await turns(10);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.deepEqual(unhandled, [], "no rejection left unhandled");
+	} finally {
+		process.off("unhandledRejection", record);
+	}
 });
 
 test("local: a wait once settled holds no listener; the store holds a wait only while it waits", async () => {

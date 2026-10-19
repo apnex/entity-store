@@ -59,8 +59,6 @@ export class RecoveredState {
 	readonly changeTimes: number[] = [Number.NaN];
 	/** What `changes` gives of each change, by position (EM16): one item per write, in the order the change made them; index 0 is unused. */
 	readonly changeItems: ChangeItem[][] = [[]];
-	/** Each change's time and writer as recorded, and the identity each of its writes wrote, in order (EM17); index 0 is unused. */
-	readonly changeStamps: { at: string; writer: string; ids: string[] }[] = [{ at: "", writer: "", ids: [] }];
 
 	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
 	apply(record: ChangeRecord, atMs: number): void {
@@ -82,7 +80,6 @@ export class RecoveredState {
 		this.position = record.position;
 		this.changeTimes[record.position] = atMs;
 		this.changeItems[record.position] = items;
-		this.changeStamps[record.position] = { at: record.at, writer: record.writer, ids: record.writes.map((write) => write.id) };
 		this.latestAt = Math.max(this.latestAt, atMs);
 	}
 
