@@ -581,3 +581,30 @@ test("local: waitForChange on a stopped store throws store-stopped", () => {
 	assert.throws(() => store.create(note("alpha"), write("alice")), (e) => e?.code === "store-stopped");
 	assert.throws(() => store.waitForChange(0), (e) => e?.code === "store-stopped", "a wait on a stopped store throws");
 });
+
+test("D7-E1: follow from forgottenThrough reports entering, changing and leaving for entities written before forgottenThrough, before and after restarting from a compacted base log", () => {
+	let now = T0;
+	const storage = createMemoryStoragePort();
+	const makeStore = () => open(storage, { clock: { now: () => now }, historyMs: 1_000 });
+	let store = makeStore();
+	const a = store.create(note("alpha", ["set:yes"]), write("alice")).answer.entity;
+	const b = store.create(note("beta", ["set:yes"]), write("alice")).answer.entity;
+	const c = store.create(note("gamma", ["set:no"]), write("alice")).answer.entity;
+	// Advance past historyMs (T0 + 2000) and write changes 4, 5, 6 so positions 1..3 are compacted into base (forgottenThrough = 3).
+	now = T0 + 2_000;
+	const aUpdated = store.update({ target: { id: a.id }, body: { summary: "changed after compaction" } }, write("bob")).answer.entity;
+	const cEntered = store.update({ target: { id: c.id }, tags: ["set:yes"] }, write("bob")).answer.entity;
+	assert.equal(store.delete({ target: { id: b.id } }, write("bob")).outcome, "answered");
+	assert.equal(store.state.forgottenThrough, 3);
+	assert.equal(storage.records()[0].type, "base");
+	assert.equal(storage.records()[0].position, 3);
+
+	const expected = [
+		item("changing", 4, a.id, aUpdated, { at: iso(T0 + 2_000), writer: "bob" }),
+		item("entering", 5, c.id, cEntered, { at: iso(T0 + 2_000), writer: "bob" }),
+		item("leaving", 6, b.id, null, { at: iso(T0 + 2_000), writer: "bob" }),
+	];
+	assert.deepEqual(store.follow({ kind: "note", tags: ["set:yes"], since: 3 }).answer, { position: 6, through: 6, changes: expected });
+	store = makeStore();
+	assert.deepEqual(store.follow({ kind: "note", tags: ["set:yes"], since: 3 }).answer, { position: 6, through: 6, changes: expected });
+});

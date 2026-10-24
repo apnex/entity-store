@@ -91,6 +91,7 @@ export function openEntityStore(options: StoreOptions): StoreOpening {
 	if (options === null || typeof options !== "object") throw new TypeError("openEntityStore needs its options");
 	const { storage, clock, historyMs, maxEntityBytes, kinds } = options;
 	if (!storage || typeof storage.load !== "function" || typeof storage.append !== "function") throw new TypeError("openEntityStore needs a storage port with load and append");
+	if (storage.compact !== undefined && typeof storage.compact !== "function") throw new TypeError("openEntityStore's storage.compact must be a function when given");
 	if (!clock || typeof clock.now !== "function") throw new TypeError("openEntityStore needs a clock port with now");
 	if (kinds === null || typeof kinds !== "object" || Array.isArray(kinds)) throw new TypeError("openEntityStore needs its kinds as an object of name to body shape");
 
@@ -152,8 +153,20 @@ export function openEntityStore(options: StoreOptions): StoreOpening {
 	if (!loaded.ok) return refuse(loaded.fault.code, loaded.fault.message, { line: loaded.fault.line });
 	const recovered = recoverLog(loaded.records);
 	if (!recovered.ok) return refuse("log-corrupt", recovered.message, { line: recovered.line });
+	const state = recovered.state;
+	if (state.latestAt !== Number.NEGATIVE_INFINITY) {
+		const advanced = state.forgetBefore(state.latestAt - historyMs);
+		if (advanced || state.timeRecordCount >= 2) {
+			try {
+				storage.compact?.(state.compactedRecords());
+			} catch (error) {
+				observePromises(error);
+				return refuse("log-unwritable", `the change log could not be compacted at opening: ${(error as Error)?.message ?? String(error)}`, { line: null });
+			}
+		}
+	}
 
-	return { opened: true, store: new Store(storage, clock, historyMs, maxEntityBytes, judges, recovered.state) };
+	return { opened: true, store: new Store(storage, clock, historyMs, maxEntityBytes, judges, state) };
 }
 
 /** The error a stopped store throws for every call after an append failed. */
@@ -219,6 +232,25 @@ class Store implements EntityStore {
 		}
 	}
 
+	#compact(): void {
+		const records = this.state.compactedRecords();
+		try {
+			this.storage.compact?.(records);
+		} catch (cause) {
+			this.#isStopped = true;
+			this.#stopped = cause;
+			// Every wait rejects with the store's store-stopped error (EM15, EM17).
+			for (const wait of [...this.#waits]) wait.settle(undefined, stoppedError(cause));
+			throw stoppedError(cause);
+		}
+	}
+
+	#forgetExpired(): void {
+		if (this.state.latestAt === Number.NEGATIVE_INFINITY) return;
+		const advanced = this.state.forgetBefore(this.state.latestAt - this.historyMs);
+		if (advanced || this.state.timeRecordCount >= 2) this.#compact();
+	}
+
 	/** Resolves every wait whose `after` the store's position has passed, before the write returns (EM17). */
 	#wake(): void {
 		const position = this.state.position;
@@ -230,6 +262,8 @@ class Store implements EntityStore {
 		if (now > this.state.latestAt) {
 			this.#append({ type: "time", at: iso(now) });
 			this.state.latestAt = now;
+			this.state.timeRecordCount++;
+			this.#forgetExpired();
 		}
 		return now;
 	}
@@ -297,6 +331,7 @@ class Store implements EntityStore {
 		};
 		this.#append(record);
 		this.state.apply(record, planned.atMs);
+		this.#forgetExpired();
 		this.#wake();
 		return { outcome: "answered", answer: cloneValue(planned.answer) };
 	}
@@ -405,8 +440,12 @@ class Store implements EntityStore {
 		const asOf = input.asOf ?? current;
 		if (asOf < 0 || asOf > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: asOf, current }) };
 		if (asOf < current) {
-			const now = this.#timeForDecision(this.#now());
-			if (!this.#within(this.state.changeAt(asOf + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: asOf }) };
+			const clock = this.#now();
+			if (asOf < this.state.forgottenThrough) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: asOf }) };
+			const now = this.#timeForDecision(clock);
+			if (asOf < this.state.forgottenThrough || !this.#within(this.state.changeAt(asOf + 1), now)) {
+				return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: asOf }) };
+			}
 		}
 		// A find's tags are a set (EM2): more than 32 distinct tags match nothing, as no entity carries more
 		// than 32, while any number of copies of one tag is that tag once (EM9). Tags are not judged.
@@ -433,14 +472,11 @@ class Store implements EntityStore {
 		return { outcome: "answered", answer: { position: this.state.position, historyMs: this.historyMs } };
 	}
 
-	// The canonical JSON size of each item of a change, by position, measured once.
-	readonly #itemSizes: number[][] = [];
-
 	#sizesAt(position: number): number[] {
-		let sizes = this.#itemSizes[position];
+		let sizes = this.state.itemSizes.get(position);
 		if (sizes === undefined) {
-			sizes = (this.state.changeItems[position] as ChangeItem[]).map((item) => canonicalSize(item as unknown as JsonValue));
-			this.#itemSizes[position] = sizes;
+			sizes = (this.state.changeItems.get(position) as ChangeItem[]).map((item) => canonicalSize(item as unknown as JsonValue));
+			this.state.itemSizes.set(position, sizes);
 		}
 		return sizes;
 	}
@@ -456,8 +492,12 @@ class Store implements EntityStore {
 		const since = input.since;
 		if (since < 0 || since > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: since, current }) };
 		if (since < current) {
-			const now = this.#timeForDecision(this.#now());
-			if (!this.#within(this.state.changeAt(since + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			const clock = this.#now();
+			if (since < this.state.forgottenThrough) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			const now = this.#timeForDecision(clock);
+			if (since < this.state.forgottenThrough || !this.#within(this.state.changeAt(since + 1), now)) {
+				return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			}
 		}
 		const changes: ChangeItem[] = [];
 		let bytes = 2;
@@ -468,7 +508,7 @@ class Store implements EntityStore {
 			for (const itemSize of this.#sizesAt(position)) size += itemSize + 1;
 			if (last !== since && bytes + size > LIMITS.pageBytes) break;
 			bytes += size;
-			for (const item of this.state.changeItems[position] as ChangeItem[]) changes.push(cloneValue(item));
+			for (const item of this.state.changeItems.get(position) as ChangeItem[]) changes.push(cloneValue(item));
 			last = position;
 		}
 		return { outcome: "answered", answer: { position: current, changes, next: last < current ? last : null } };
@@ -488,8 +528,12 @@ class Store implements EntityStore {
 		const since = input.since;
 		if (since < 0 || since > current) return { outcome: "refused", refusal: storeRefusal("invalid-position", {}, { position: since, current }) };
 		if (since < current) {
-			const now = this.#timeForDecision(this.#now());
-			if (!this.#within(this.state.changeAt(since + 1), now)) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			const clock = this.#now();
+			if (since < this.state.forgottenThrough) return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			const now = this.#timeForDecision(clock);
+			if (since < this.state.forgottenThrough || !this.#within(this.state.changeAt(since + 1), now)) {
+				return { outcome: "refused", refusal: storeRefusal("position-not-held", {}, { position: since }) };
+			}
 		}
 		// The tags are a set and not judged: more than 32 distinct tags, or one no entity can carry, match nothing (EM2).
 		const wanted = [...new Set(input.tags ?? [])];
@@ -521,7 +565,7 @@ class Store implements EntityStore {
 	 */
 	#followItems(position: number, kind: string, inSet: (entity: EntityEnvelope | null) => boolean): FollowItem[] {
 		const items: FollowItem[] = [];
-		for (const written of this.state.changeItems[position] as ChangeItem[]) {
+		for (const written of this.state.changeItems.get(position) as ChangeItem[]) {
 			const stamp = "deleted" in written
 				? { id: written.deleted.id, at: written.at, writer: written.writer }
 				: { id: written.id, at: written.changed.at, writer: written.changed.writer };

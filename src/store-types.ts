@@ -227,6 +227,15 @@ export interface WriteRecord {
 	entity: EntityEnvelope | null;
 }
 
+/** A base record at the start of a compacted change log (EM15, D68, D69, BL26). */
+export interface BaseRecord {
+	type: "base";
+	position: number;
+	at: string;
+	digest: string;
+	entities: EntityEnvelope[];
+}
+
 /** A change record (EM15): one or more writes taking one position (D33). */
 export interface ChangeRecord {
 	type: "change";
@@ -246,7 +255,7 @@ export interface TimeRecord {
 }
 
 /** A record of the change log. */
-export type LogRecord = ChangeRecord | TimeRecord;
+export type LogRecord = BaseRecord | ChangeRecord | TimeRecord;
 
 /** A record as a storage port loaded it, with the line it was read from, counting the header as line 1. */
 export interface LoadedRecord {
@@ -267,11 +276,19 @@ export type StorageLoad = { ok: true; records: LoadedRecord[] } | { ok: false; f
 /**
  * The storage port an application supplies (`storage-port`): `load` gives the records kept so far, once,
  * when the store opens; `append` keeps one record, durably when the port is durable, before it returns,
- * and throws when it cannot.
+ * and throws when it cannot; `compact`, when present, replaces the active log's records with `records`
+ * once the store compacts (EM15, BL26), and throws when it cannot.
  */
 export interface StoragePort {
 	load(): StorageLoad;
 	append(record: LogRecord): void;
+	compact?(records: readonly LogRecord[]): void;
+}
+
+/** Options for `createFileStoragePort` (EM15, BL26). */
+export interface FileStorageOptions {
+	/** Optional archive file to which evicted `change` records are appended before compaction replaces `file`. */
+	readonly archiveFile?: string;
 }
 
 /** The clock port an application supplies: its time in milliseconds since 1970-01-01T00:00:00Z. */

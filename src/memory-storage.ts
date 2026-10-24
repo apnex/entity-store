@@ -13,13 +13,16 @@ export interface MemoryStoragePort extends StoragePort {
 
 /** Creates a storage port that keeps the change log in memory; nothing it holds outlives the process. */
 export function createMemoryStoragePort(): MemoryStoragePort {
-	const lines: string[] = [];
+	let lines: string[] = [];
 	return {
 		load(): StorageLoad {
 			return { ok: true, records: lines.map((text, i) => ({ line: i + 2, record: JSON.parse(text) as unknown })) };
 		},
 		append(record: LogRecord): void {
 			lines.push(JSON.stringify(record));
+		},
+		compact(records: readonly LogRecord[]): void {
+			lines = records.map((record) => JSON.stringify(record));
 		},
 		records(): LogRecord[] {
 			return lines.map((text) => JSON.parse(text) as LogRecord);

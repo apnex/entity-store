@@ -8,6 +8,7 @@
 export { openEntityStore } from "./entity-store.js";
 export { createMemoryStoragePort, type MemoryStoragePort } from "./memory-storage.js";
 export type {
+	BaseRecord,
 	ChangeItem,
 	ChangeRecord,
 	ChangesAnswer,
@@ -22,6 +23,7 @@ export type {
 	EntityEnvelope,
 	EntityStore,
 	EntityTarget,
+	FileStorageOptions,
 	FindAnswer,
 	FindInput,
 	FollowAnswer,

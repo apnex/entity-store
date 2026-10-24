@@ -1,14 +1,16 @@
 /**
- * The change log's records and the state they build (EM15, D33).
+ * The change log's records and the state they build (EM8, EM15, EM16, EM17, D33, D68, D69, BL26).
  *
- * On recovery every record is checked to hold exactly the fields EM15 names, each of its type, and the
- * changes' positions to run from 1 without a gap; the first record that breaks this stops the store
- * opening, naming its line. The records are then replayed in order, and each change's writes in order: a
- * create or update makes its entity the entity's state, a delete removes the entity and frees its name,
- * each change makes its write identity name it, and every time advances the store's time (EM8).
+ * On recovery every record is checked to hold exactly the fields EM15 names, each of its type, with an
+ * optional leading `base` record on line 2 and the changes' positions running from 1 (or from
+ * `base.position + 1` after a `base` record) without a gap; the first record that breaks this stops the
+ * store opening, naming its line. The records are then replayed in order, and each change's writes in order:
+ * a `base` record sets the compacted frontier and each live entity's baseline state there, a create or update
+ * makes its entity the entity's state, a delete removes the entity and frees its name, each change makes its
+ * write identity name it, and every time advances the store's time (EM8).
  */
 import type { JsonObject, JsonValue } from "@apnex/shape-check";
-import type { ChangeItem, ChangeRecord, DeletedItem, EntityEnvelope, LoadedRecord, WriteAnswer } from "./store-types.js";
+import type { BaseRecord, ChangeItem, ChangeRecord, DeletedItem, EntityEnvelope, LoadedRecord, LogRecord, WriteAnswer } from "./store-types.js";
 
 /** True for a JSON object, false for null, arrays and scalars. */
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -38,6 +40,7 @@ export interface RememberedWrite {
 }
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const DIGEST_HEX = /^[0-9a-f]{64}$/;
 
 /** Milliseconds of an ISO 8601 time as the store writes it, or undefined when it is not one. */
 export function parseTime(text: unknown): number | undefined {
@@ -46,19 +49,49 @@ export function parseTime(text: unknown): number | undefined {
 	return Number.isFinite(ms) && new Date(ms).toISOString() === text ? ms : undefined;
 }
 
-/** The state the change log builds: entities with their history, names, write identities, positions and the latest time. */
+/** The state the change log builds: entities with their held history, names, write identities, positions and the latest time. */
 export class RecoveredState {
 	position = 0;
 	latestAt = Number.NEGATIVE_INFINITY;
-	/** Each entity's versions in order: the position that wrote it and the envelope it left, or null once deleted. */
+	/** The greatest position forgotten once outside the history bound by `latestAt` (EM8, EM15, BL26). */
+	forgottenThrough = 0;
+	/** The timestamp (ms) of the change at `forgottenThrough`. */
+	forgottenAt = Number.NEGATIVE_INFINITY;
+	/** The 64-character SHA-256 `digest` of the change at `forgottenThrough`. */
+	forgottenDigest = "";
+	/** How many `time` records sit in the active log since the last compaction. */
+	timeRecordCount = 0;
+	/** Each entity's versions in order: at most one baseline at or before `forgottenThrough` (if alive there) and held versions after it. */
 	readonly history = new Map<string, { position: number; entity: EntityEnvelope | null }[]>();
 	/** Per kind, each name held by an entity that is not deleted, and that entity's identity. */
 	readonly names = new Map<string, Map<string, string>>();
 	readonly writes = new Map<string, RememberedWrite>();
-	/** The time of each change, by position; index 0 is unused. */
-	readonly changeTimes: number[] = [Number.NaN];
-	/** What `changes` gives of each change, by position (EM16): one item per write, in the order the change made them; index 0 is unused. */
-	readonly changeItems: ChangeItem[][] = [[]];
+	/** The time of each held change (`> forgottenThrough`), by position. */
+	readonly changeTimes = new Map<number, number>();
+	/** What `changes` gives of each held change (`> forgottenThrough`), by position (EM16). */
+	readonly changeItems = new Map<number, ChangeItem[]>();
+	/** Each held change record (`> forgottenThrough`), by position, for compaction (EM15). */
+	readonly changeRecords = new Map<number, ChangeRecord>();
+	/** Each held change's 64-character digest (`> forgottenThrough`), by position (EM15). */
+	readonly changeDigests = new Map<number, string>();
+	/** The canonical JSON size of each item of a held change (`> forgottenThrough`), by position, measured once. */
+	readonly itemSizes = new Map<number, number[]>();
+
+	/** Applies a leading `base` record at the start of recovery (EM15). */
+	applyBase(record: BaseRecord, atMs: number): void {
+		this.position = record.position;
+		this.forgottenThrough = record.position;
+		this.forgottenAt = atMs;
+		this.forgottenDigest = record.digest;
+		this.latestAt = Math.max(this.latestAt, atMs);
+		for (const entity of record.entities) {
+			const copy = structuredClone(entity);
+			this.history.set(copy.id, [{ position: copy.changed.position, entity: copy }]);
+			let kindNames = this.names.get(copy.kind);
+			if (kindNames === undefined) this.names.set(copy.kind, (kindNames = new Map()));
+			kindNames.set(copy.name, copy.id);
+		}
+	}
 
 	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
 	apply(record: ChangeRecord, atMs: number): void {
@@ -78,9 +111,98 @@ export class RecoveredState {
 		}
 		this.writes.set(record.writeId, { position: record.position, at: atMs, digest: record.digest, answer: record.answer });
 		this.position = record.position;
-		this.changeTimes[record.position] = atMs;
-		this.changeItems[record.position] = items;
+		this.changeTimes.set(record.position, atMs);
+		this.changeItems.set(record.position, items);
+		this.changeRecords.set(record.position, structuredClone(record));
+		this.changeDigests.set(record.position, record.digest);
 		this.latestAt = Math.max(this.latestAt, atMs);
+	}
+
+	/**
+	 * Forgets every held change `p` whose time is at or before `cutoffMs` (`latestAt - historyMs`), advancing
+	 * `forgottenThrough` and evicting every write identity, change record, digest, time, item list, item-size
+	 * entry and superseded or deleted entity version at or before `forgottenThrough` (EM8, EM15, EM17, BL26).
+	 * Returns true when `forgottenThrough` advanced.
+	 */
+	forgetBefore(cutoffMs: number): boolean {
+		let nextForgotten = this.forgottenThrough;
+		for (let p = this.forgottenThrough + 1; p <= this.position; p++) {
+			const at = this.changeTimes.get(p);
+			if (at === undefined || at > cutoffMs) break;
+			nextForgotten = p;
+		}
+		if (nextForgotten === this.forgottenThrough) return false;
+		for (let p = this.forgottenThrough + 1; p <= nextForgotten; p++) {
+			this.forgottenAt = this.changeTimes.get(p) as number;
+			this.forgottenDigest = this.changeDigests.get(p) as string;
+			this.changeTimes.delete(p);
+			this.changeItems.delete(p);
+			this.changeRecords.delete(p);
+			this.changeDigests.delete(p);
+			this.itemSizes.delete(p);
+		}
+		for (const [writeId, remembered] of this.writes) {
+			if (remembered.position <= nextForgotten) this.writes.delete(writeId);
+		}
+		for (const [id, versions] of this.history) {
+			let baseline: { position: number; entity: EntityEnvelope | null } | undefined;
+			const after: { position: number; entity: EntityEnvelope | null }[] = [];
+			for (const version of versions) {
+				if (version.position <= nextForgotten) baseline = version;
+				else after.push(version);
+			}
+			if (baseline !== undefined && baseline.entity !== null) {
+				this.history.set(id, [baseline, ...after]);
+			} else if (after.length > 0) {
+				this.history.set(id, after);
+			} else {
+				this.history.delete(id);
+			}
+		}
+		this.forgottenThrough = nextForgotten;
+		return true;
+	}
+
+	/** Every entity of any kind alive as of a position, sorted by `(kind, name)` in Unicode code-point order. */
+	allEntitiesAsOf(position: number): EntityEnvelope[] {
+		const found: EntityEnvelope[] = [];
+		for (const versions of this.history.values()) {
+			let state: EntityEnvelope | null = null;
+			for (const version of versions) {
+				if (version.position > position) break;
+				state = version.entity;
+			}
+			if (state !== null) found.push(structuredClone(state));
+		}
+		return found.sort((a, b) => compareCodePoints(a.kind, b.kind) || compareCodePoints(a.name, b.name));
+	}
+
+	/** The compacted active log records for the current state (EM15). */
+	compactedRecords(): LogRecord[] {
+		const out: LogRecord[] = [];
+		let lastRecordAt = Number.NEGATIVE_INFINITY;
+		if (this.forgottenThrough >= 1) {
+			out.push({
+				type: "base",
+				position: this.forgottenThrough,
+				at: new Date(this.forgottenAt).toISOString(),
+				digest: this.forgottenDigest,
+				entities: this.allEntitiesAsOf(this.forgottenThrough),
+			});
+			lastRecordAt = this.forgottenAt;
+		}
+		for (let p = this.forgottenThrough + 1; p <= this.position; p++) {
+			const record = this.changeRecords.get(p) as ChangeRecord;
+			out.push(structuredClone(record));
+			lastRecordAt = this.changeTimes.get(p) as number;
+		}
+		if (this.latestAt !== Number.NEGATIVE_INFINITY && (out.length === 0 || this.latestAt > lastRecordAt)) {
+			out.push({ type: "time", at: new Date(this.latestAt).toISOString() });
+			this.timeRecordCount = 1;
+		} else {
+			this.timeRecordCount = 0;
+		}
+		return out;
 	}
 
 	/** The entity a target names now, if it is not deleted. */
@@ -91,9 +213,9 @@ export class RecoveredState {
 		return versions?.[versions.length - 1]?.entity ?? undefined;
 	}
 
-	/** The time of the change at a position. */
+	/** The time of the held change at a position. */
 	changeAt(position: number): number {
-		return this.changeTimes[position] as number;
+		return this.changeTimes.get(position) as number;
 	}
 
 	/**
@@ -193,13 +315,10 @@ function checkAnswer(value: unknown): Check {
 	return checkEnvelope(value.entity, `${where}.entity`);
 }
 
-/** The fault in one record, or undefined when it holds exactly the fields EM15 names, each of its type. */
-function checkRecord(record: unknown, expectedPosition: number): Check {
+/** Checks a `change` record's fields and types without requiring a specific expected position (used by archive validation). */
+export function checkChangeRecordShape(record: unknown): Check {
 	if (!isJsonObject(record)) return "the record is not an object";
-	if (record.type === "time") {
-		return exactFields(record, ["type", "at"], "the time record") ?? (parseTime(record.at) === undefined ? "the time record's at is not a time in UTC to the millisecond" : undefined);
-	}
-	if (record.type !== "change") return Object.hasOwn(record, "type") ? "the record's type is neither change nor time" : "the record lacks the field type";
+	if (record.type !== "change") return "the record's type is not change";
 	const fields = exactFields(record, ["type", "position", "at", "writer", "writeId", "digest", "answer", "writes"], "the change record");
 	if (fields) return fields;
 	if (!isPositionNumber(record.position)) return "the change's position is not a whole number from 1";
@@ -224,6 +343,46 @@ function checkRecord(record: unknown, expectedPosition: number): Check {
 			if (envelope) return envelope;
 		}
 	}
+	return undefined;
+}
+
+function checkBaseRecord(record: Record<string, unknown>, isFirstRecord: boolean): Check {
+	if (!isFirstRecord) return "the base record is not the change log's first record";
+	const fields = exactFields(record, ["type", "position", "at", "digest", "entities"], "the base record");
+	if (fields) return fields;
+	if (!isPositionNumber(record.position)) return "the base record's position is not a whole number from 1";
+	if (parseTime(record.at) === undefined) return "the base record's at is not a time in UTC to the millisecond";
+	if (!isString(record.digest) || !DIGEST_HEX.test(record.digest)) return "the base record's digest is not 64 lowercase hexadecimal digits";
+	if (!Array.isArray(record.entities)) return "the base record's entities is not a list";
+	const seenIds = new Set<string>();
+	const seenNames = new Set<string>();
+	for (const [i, raw] of (record.entities as JsonValue[]).entries()) {
+		const where = `base entity ${i + 1}`;
+		const env = checkEnvelope(raw, where);
+		if (env) return env;
+		const entity = raw as unknown as EntityEnvelope;
+		if (entity.created.position > entity.changed.position || entity.changed.position > record.position) {
+			return `${where} has created.position (${entity.created.position}) or changed.position (${entity.changed.position}) after the base position (${record.position})`;
+		}
+		if (seenIds.has(entity.id)) return `${where} duplicates the id ${entity.id}`;
+		seenIds.add(entity.id);
+		const nameKey = `${entity.kind}\0${entity.name}`;
+		if (seenNames.has(nameKey)) return `${where} duplicates the name ${entity.name} in kind ${entity.kind}`;
+		seenNames.add(nameKey);
+	}
+	return undefined;
+}
+
+/** The fault in one record, or undefined when it holds exactly the fields EM15 names, each of its type. */
+function checkRecord(record: unknown, expectedPosition: number, isFirstRecord: boolean): Check {
+	if (!isJsonObject(record)) return "the record is not an object";
+	if (record.type === "base") return checkBaseRecord(record, isFirstRecord);
+	if (record.type === "time") {
+		return exactFields(record, ["type", "at"], "the time record") ?? (parseTime(record.at) === undefined ? "the time record's at is not a time in UTC to the millisecond" : undefined);
+	}
+	if (record.type !== "change") return Object.hasOwn(record, "type") ? "the record's type is neither change nor time" : "the record lacks the field type";
+	const shape = checkChangeRecordShape(record);
+	if (shape) return shape;
 	if (record.position !== expectedPosition) return `the change's position is ${record.position} where ${expectedPosition} follows without a gap`;
 	return undefined;
 }
@@ -231,13 +390,19 @@ function checkRecord(record: unknown, expectedPosition: number): Check {
 /** Replays the records a storage port loaded, or names the first line that stops the store opening. */
 export function recoverLog(records: readonly LoadedRecord[]): { ok: true; state: RecoveredState } | { ok: false; line: number; message: string } {
 	const state = new RecoveredState();
-	for (const { line, record } of records) {
-		const fault = checkRecord(record, state.position + 1);
+	for (const [index, { line, record }] of records.entries()) {
+		const fault = checkRecord(record, state.position + 1, index === 0);
 		if (fault) return { ok: false, line, message: `line ${line}: ${fault}` };
 		const checked = record as { type: string; at: string };
 		const atMs = parseTime(checked.at) as number;
-		if (checked.type === "time") state.latestAt = Math.max(state.latestAt, atMs);
-		else state.apply(record as unknown as ChangeRecord, atMs);
+		if (checked.type === "base") {
+			state.applyBase(record as unknown as BaseRecord, atMs);
+		} else if (checked.type === "time") {
+			state.latestAt = Math.max(state.latestAt, atMs);
+			state.timeRecordCount++;
+		} else {
+			state.apply(record as unknown as ChangeRecord, atMs);
+		}
 	}
 	return { ok: true, state };
 }

@@ -33,11 +33,12 @@ test("local: the writer is recorded exactly as the application names it, uncheck
 test("local: a change's time comes from the clock port the application supplies, never the wall clock", () => {
 	const { store, storage, clock } = openLocal({ time: 0 });
 	assert.equal(store.create(note("epoch"), { writer: "a", writeId: "1" }).answer.entity.created.at, "1970-01-01T00:00:00.000Z");
+	assert.deepEqual(storage.records().map((r) => [r.type, r.at]), [["change", "1970-01-01T00:00:00.000Z"]], "the first change record carries its time");
 	clock.set(Date.UTC(2101, 0, 1, 0, 0, 0, 7));
 	const later = store.update({ target: { id: "e1.1" }, tags: ["a:b"] }, { writer: "b", writeId: "2" }).answer.entity;
 	assert.equal(later.changed.at, "2101-01-01T00:00:00.007Z");
 	assert.equal(later.created.at, "1970-01-01T00:00:00.000Z");
-	assert.deepEqual(storage.records().filter((r) => r.type === "change").map((r) => r.at), ["1970-01-01T00:00:00.000Z", "2101-01-01T00:00:00.007Z"], "each change record carries its time");
+	assert.deepEqual(storage.records().map((r) => [r.type, r.at]), [["base", "1970-01-01T00:00:00.000Z"], ["change", "2101-01-01T00:00:00.007Z"]], "after 131 years the first change is compacted to base with its time, and the second carries its time");
 });
 
 // EM8's clock range: whole milliseconds from 0000-01-01T00:00:00.000Z to 9999-12-31T23:59:59.999Z.
