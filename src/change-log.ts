@@ -76,6 +76,17 @@ export class RecoveredState {
 	readonly changeDigests = new Map<number, string>();
 	/** The canonical JSON size of each item of a held change (`> forgottenThrough`), by position, measured once. */
 	readonly itemSizes = new Map<number, number[]>();
+	/** Time records that preceded each held change (`> forgottenThrough`), evicted when that change is forgotten. */
+	readonly interveningTimes = new Map<number, string[]>();
+	/** Trailing time records after the latest change record (before the next change is applied). */
+	#pendingTimes: string[] = [];
+
+	/** Records a `time` record at `at` (`atMs`). */
+	applyTime(at: string, atMs: number): void {
+		this.latestAt = Math.max(this.latestAt, atMs);
+		this.#pendingTimes.push(at);
+		this.timeRecordCount = this.#pendingTimes.length;
+	}
 
 	/** Applies a leading `base` record at the start of recovery (EM15). */
 	applyBase(record: BaseRecord, atMs: number): void {
@@ -84,6 +95,8 @@ export class RecoveredState {
 		this.forgottenAt = atMs;
 		this.forgottenDigest = record.digest;
 		this.latestAt = Math.max(this.latestAt, atMs);
+		this.#pendingTimes = [];
+		this.timeRecordCount = 0;
 		for (const entity of record.entities) {
 			const copy = structuredClone(entity);
 			this.history.set(copy.id, [{ position: copy.changed.position, entity: copy }]);
@@ -95,6 +108,11 @@ export class RecoveredState {
 
 	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
 	apply(record: ChangeRecord, atMs: number): void {
+		if (this.#pendingTimes.length > 0) {
+			this.interveningTimes.set(record.position, this.#pendingTimes);
+			this.#pendingTimes = [];
+			this.timeRecordCount = 0;
+		}
 		const items: ChangeItem[] = [];
 		for (const write of record.writes) {
 			const versions = this.history.get(write.id) ?? [];
@@ -140,6 +158,7 @@ export class RecoveredState {
 			this.changeRecords.delete(p);
 			this.changeDigests.delete(p);
 			this.itemSizes.delete(p);
+			this.interveningTimes.delete(p);
 		}
 		for (const [writeId, remembered] of this.writes) {
 			if (remembered.position <= nextForgotten) this.writes.delete(writeId);
@@ -192,14 +211,20 @@ export class RecoveredState {
 			lastRecordAt = this.forgottenAt;
 		}
 		for (let p = this.forgottenThrough + 1; p <= this.position; p++) {
+			for (const at of this.interveningTimes.get(p) ?? []) {
+				out.push({ type: "time", at });
+			}
 			const record = this.changeRecords.get(p) as ChangeRecord;
 			out.push(structuredClone(record));
 			lastRecordAt = this.changeTimes.get(p) as number;
 		}
 		if (this.latestAt !== Number.NEGATIVE_INFINITY && (out.length === 0 || this.latestAt > lastRecordAt)) {
-			out.push({ type: "time", at: new Date(this.latestAt).toISOString() });
+			const at = new Date(this.latestAt).toISOString();
+			out.push({ type: "time", at });
+			this.#pendingTimes = [at];
 			this.timeRecordCount = 1;
 		} else {
+			this.#pendingTimes = [];
 			this.timeRecordCount = 0;
 		}
 		return out;
@@ -398,8 +423,7 @@ export function recoverLog(records: readonly LoadedRecord[]): { ok: true; state:
 		if (checked.type === "base") {
 			state.applyBase(record as unknown as BaseRecord, atMs);
 		} else if (checked.type === "time") {
-			state.latestAt = Math.max(state.latestAt, atMs);
-			state.timeRecordCount++;
+			state.applyTime(checked.at, atMs);
 		} else {
 			state.apply(record as unknown as ChangeRecord, atMs);
 		}

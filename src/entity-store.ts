@@ -260,9 +260,9 @@ class Store implements EntityStore {
 	// Before any decision about retention, the store's time reaches the change log (EM8).
 	#timeForDecision(now: number): number {
 		if (now > this.state.latestAt) {
-			this.#append({ type: "time", at: iso(now) });
-			this.state.latestAt = now;
-			this.state.timeRecordCount++;
+			const at = iso(now);
+			this.#append({ type: "time", at });
+			this.state.applyTime(at, now);
 			this.#forgetExpired();
 		}
 		return now;
