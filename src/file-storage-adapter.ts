@@ -65,6 +65,11 @@ export function createFileStoragePort(file: string, options?: FileStorageOptions
 	const checkPaths = (): void => {
 		checkNotSymlinkOrDirectory(file, "the change log");
 		checkNotSymlinkOrDirectory(compactFile, "the compaction scratch file");
+		const fileStat = fs.lstatSync(file, { throwIfNoEntry: false });
+		const compactStat = fs.lstatSync(compactFile, { throwIfNoEntry: false });
+		if (fileStat !== undefined && compactStat !== undefined && fileStat.dev === compactStat.dev && fileStat.ino === compactStat.ino) {
+			throw new Error("the compaction scratch file is linked to the same file as the change log");
+		}
 		if (archiveFile !== undefined) {
 			checkNotSymlinkOrDirectory(archiveFile, "the archive log");
 			const resolvedFile = path.resolve(file);
@@ -73,10 +78,12 @@ export function createFileStoragePort(file: string, options?: FileStorageOptions
 			if (resolvedArchive === resolvedFile || resolvedArchive === resolvedCompact) {
 				throw new Error("the archive log path collides with the change log or its compaction scratch file");
 			}
-			const fileStat = fs.lstatSync(file, { throwIfNoEntry: false });
 			const archStat = fs.lstatSync(archiveFile, { throwIfNoEntry: false });
 			if (fileStat !== undefined && archStat !== undefined && fileStat.dev === archStat.dev && fileStat.ino === archStat.ino) {
 				throw new Error("the archive log is linked to the same file as the change log");
+			}
+			if (compactStat !== undefined && archStat !== undefined && compactStat.dev === archStat.dev && compactStat.ino === archStat.ino) {
+				throw new Error("the archive log is linked to the same file as the compaction scratch file");
 			}
 		}
 	};
@@ -251,7 +258,8 @@ function loadAndValidateArchive(
 		checkPaths();
 		if (!fs.existsSync(archiveFile)) writeHeaderTo(archiveFile);
 		checkPaths();
-		archFd = fs.openSync(archiveFile, "r");
+		// Verify appendability at opening (`r+`), so a read-only (`0444`) archive fails startup as `log-unwritable`.
+		archFd = fs.openSync(archiveFile, "r+");
 		let archSize = fs.fstatSync(archFd).size;
 		let headLen = Math.min(HEADER_READ_BYTES, archSize);
 		let headBuf = Buffer.alloc(headLen);
@@ -261,7 +269,7 @@ function loadAndValidateArchive(
 			fs.closeSync(archFd);
 			archFd = undefined;
 			writeHeaderTo(archiveFile);
-			archFd = fs.openSync(archiveFile, "r");
+			archFd = fs.openSync(archiveFile, "r+");
 			archSize = fs.fstatSync(archFd).size;
 			headLen = Math.min(HEADER_READ_BYTES, archSize);
 			headBuf = Buffer.alloc(headLen);
@@ -318,7 +326,7 @@ function loadAndValidateArchive(
 				fs.closeSync(archFd);
 				archFd = undefined;
 				cutBackFileTo(archiveFile, keep);
-				archFd = fs.openSync(archiveFile, "r");
+				archFd = fs.openSync(archiveFile, "r+");
 				archSize = keep;
 				continue;
 			}
@@ -334,7 +342,7 @@ function loadAndValidateArchive(
 				fs.closeSync(archFd);
 				archFd = undefined;
 				cutBackFileTo(archiveFile, keep);
-				archFd = fs.openSync(archiveFile, "r");
+				archFd = fs.openSync(archiveFile, "r+");
 				archSize = keep;
 				continue;
 			}

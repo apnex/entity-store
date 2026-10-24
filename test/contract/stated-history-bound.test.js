@@ -277,11 +277,32 @@ test("D7-E1: position === 0 time-only log compaction, timeRecordCount >= 2 compa
 		assert.equal(timeOpened.opened, true);
 		const compactedLines = fs.readFileSync(timeOnlyFile, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
 		assert.deepEqual(compactedLines, [{ type: "time", at: iso(T0 + 500) }], "time-only log at position 0 compacts to one time record with no base");
-		const firstWrite = timeOpened.store.create(note("first"), { writer: "alice", writeId: "w-first" });
+		timePort.close();
+		// Reopen the compacted time-only log a second time with the clock rolled back (Attempt 1 F4).
+		const timePort2 = createFileStoragePort(timeOnlyFile);
+		const timeOpened2 = openEntityStore({ storage: timePort2, clock: { now: () => T0 }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS });
+		assert.equal(timeOpened2.opened, true);
+		const firstWrite = timeOpened2.store.create(note("first"), { writer: "alice", writeId: "w-first" });
 		assert.equal(firstWrite.outcome, "answered");
 		assert.equal(firstWrite.answer.position, 1);
 		assert.equal(firstWrite.answer.entity.created.at, iso(T0 + 500), "first accepted change preserves recovered latestAt when clock is rolled back");
-		timePort.close();
+		timePort2.close();
+
+		// 1b. Interleaved [change, time, change, time] compacts to [change, change, time], and when forgottenThrough advances, to [base, change, change] (Attempt 1 F1).
+		let ilNow = T0;
+		const ilPort = createMemoryStoragePort();
+		const ilStore = openEntityStore({ storage: ilPort, clock: { now: () => ilNow }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS }).store;
+		ilStore.create(note("il-1"), { writer: "alice", writeId: "il-w1" });
+		ilNow = T0 + 100;
+		assert.equal(ilStore.find({ kind: "note", asOf: 0 }).outcome, "answered");
+		ilNow = T0 + 200;
+		ilStore.create(note("il-2"), { writer: "alice", writeId: "il-w2" });
+		ilNow = T0 + 300;
+		assert.equal(ilStore.find({ kind: "note", asOf: 0 }).outcome, "answered");
+		assert.deepEqual(ilPort.records().map((r) => r.type), ["change", "change", "time"], "interleaved second time record compacts to [change, change, time]");
+		ilNow = T0 + 1_000;
+		ilStore.create(note("il-3"), { writer: "alice", writeId: "il-w3" });
+		assert.deepEqual(ilPort.records().map((r) => r.type), ["base", "change", "change"], "frontier advance omits earlier interleaved time record");
 
 		// 2. When forgottenThrough < position and repeated retention queries inside historyMs append time records, timeRecordCount >= 2 compacts them without writing time records to archiveFile.
 		const activeFile = path.join(dir, "matrix.log");
@@ -347,6 +368,16 @@ test("D7-E1: position === 0 time-only log compaction, timeRecordCount >= 2 compa
 			assert.equal(store.checkRepeat("create", note("alpha", ["t:a"]), { writer: "alice", writeId: "w1" }).repeat, "none", `${phase}: w1 forgotten`);
 			assert.equal(store.checkRepeat("delete", { target: { id: c2.id } }, { writer: "bob", writeId: "w3" }).repeat, "none", `${phase}: w3 forgotten`);
 		}
+		// Run 100 stale queries after restart too, advancing clock and confirming active log stays at 2 records (Attempt 1 F4).
+		for (let i = 1; i <= 100; i++) {
+			now = T0 + 20_000 + i * 100;
+			for (const p of [0, 1, 2]) {
+				assert.equal(store.find({ kind: "note", asOf: p }).refusal?.code, "position-not-held");
+				assert.equal(store.changes({ since: p }).refusal?.code, "position-not-held");
+				assert.equal(store.follow({ kind: "note", since: p }).refusal?.code, "position-not-held");
+			}
+		}
+		assert.equal(fs.readFileSync(activeFile, "utf8").split("\n").slice(1, -1).length, 2, "still 2 active records after 100 post-restart stale queries");
 		// Expired create of live name meets name-taken; expired delete of deleted entity meets not-found; expired update runs afresh at position 4, revision 2.
 		assert.equal(store.create(note("alpha", ["t:a"]), { writer: "alice", writeId: "w1" }).refusal?.code, "name-taken");
 		assert.equal(store.delete({ target: { id: c2.id } }, { writer: "bob", writeId: "w3" }).refusal?.code, "not-found");

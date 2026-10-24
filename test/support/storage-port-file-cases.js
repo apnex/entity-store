@@ -276,12 +276,26 @@ test("D7-E1, file port: base record validation, unknown-kind/misfit-body base re
 			assert.deepEqual([res.opened, res.refusal?.code], [false, "log-unwritable"]);
 			assert.deepEqual(fs.readFileSync(file), originalBytes);
 		}
-		// Hard link alias of file
+		// Hard link alias of file and hard link alias of ${file}.compact (Attempt 1 F2)
 		const hardLink = path.join(dir, "hardlink.log");
 		fs.linkSync(file, hardLink);
 		const hardRes = openEntityStore({ storage: createFileStoragePort(file, { archiveFile: hardLink }), clock: { now: () => T0 }, historyMs: 60_000, maxEntityBytes: 65_536, kinds: KINDS });
 		assert.deepEqual([hardRes.opened, hardRes.refusal?.code], [false, "log-unwritable"]);
 		assert.deepEqual(fs.readFileSync(file), originalBytes);
+		const compactHardArch = path.join(dir, "compact-hard-arch.log");
+		fs.writeFileSync(compactHardArch, `${HEADER}\n`);
+		fs.linkSync(compactHardArch, `${file}.compact`);
+		const compactHardRes = openEntityStore({ storage: createFileStoragePort(file, { archiveFile: compactHardArch }), clock: { now: () => T0 }, historyMs: 60_000, maxEntityBytes: 65_536, kinds: KINDS });
+		assert.deepEqual([compactHardRes.opened, compactHardRes.refusal?.code], [false, "log-unwritable"], "archive hard-linked to ${file}.compact is refused as log-unwritable");
+		assert.equal(fs.readFileSync(compactHardArch, "utf8"), `${HEADER}\n`);
+		fs.unlinkSync(`${file}.compact`);
+		// Existing read-only (0o444) archiveFile is refused at opening as log-unwritable (Attempt 1 F3)
+		const roArch = path.join(dir, "readonly-arch.log");
+		fs.writeFileSync(roArch, `${HEADER}\n`, { mode: 0o444 });
+		fs.chmodSync(roArch, 0o444);
+		const roRes = openEntityStore({ storage: createFileStoragePort(file, { archiveFile: roArch }), clock: { now: () => T0 }, historyMs: 60_000, maxEntityBytes: 65_536, kinds: KINDS });
+		assert.deepEqual([roRes.opened, roRes.refusal?.code], [false, "log-unwritable"], "existing 0444 read-only archiveFile is refused at opening");
+		fs.chmodSync(roArch, 0o600);
 		// Symlink at archiveFile and symlink at ${file}.compact
 		const targetFile = path.join(dir, "innocent.txt");
 		fs.writeFileSync(targetFile, "keep-me");
@@ -366,35 +380,58 @@ test("D7-E1, file port: base record validation, unknown-kind/misfit-body base re
 		], "exact fs operation ordering during compact");
 		port.close();
 
-		// Simulate crash after archive flush (position 1 archived) and before rename on first compaction (file still has no base).
-		const compactedAt1 = fs.readFileSync(file);
-		fs.writeFileSync(file, uncompactedActive);
-		port = createFileStoragePort(file, { archiveFile: arch });
-		const rec1 = openEntityStore({ storage: port, clock: { now: () => now }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS });
-		assert.equal(rec1.opened, true, "reovers cleanly when archive was flushed before first rename");
-		const archAfterRec1 = fs.readFileSync(arch, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
+		// Simulate real rename interruption after archive flush on first compaction (with no prior base) and on an already-based log (with > 64 KiB overlap) (Attempt 1 F4).
+		const crashDir = path.join(dir, "real-crash");
+		fs.mkdirSync(crashDir);
+		const crashFile = path.join(crashDir, "active.log");
+		const crashArch = path.join(crashDir, "arch.log");
+		let crashNow = T0;
+		let crashPort = createFileStoragePort(crashFile, { archiveFile: crashArch });
+		let crashStore = openEntityStore({ storage: crashPort, clock: { now: () => crashNow }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS }).store;
+		crashStore.create(note("c1"), write(1));
+		crashNow = T0 + 100;
+		crashStore.create(note("c2"), write(2));
+		// Intercept renameSync so change 3 is appended to crashFile and change 1 is flushed to crashArch, then rename throws before replacing crashFile.
+		fs.renameSync = () => { throw new Error("simulated crash before first rename"); };
+		try {
+			crashNow = T0 + 1_050;
+			assert.throws(() => crashStore.create(note("c3"), write(3)), (e) => e.code === "store-stopped");
+		} finally {
+			fs.renameSync = origRename;
+		}
+		crashPort.close();
+		// Reopen: change 3 is in crashFile, change 1 is already in crashArch, and opening re-compacts without duplicating change 1.
+		crashPort = createFileStoragePort(crashFile, { archiveFile: crashArch });
+		const rec1 = openEntityStore({ storage: crashPort, clock: { now: () => crashNow }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS });
+		assert.equal(rec1.opened, true, "recovers cleanly when rename failed after first archive flush");
+		assert.equal(rec1.store.historyBound().answer.position, 3);
+		assert.deepEqual(rec1.store.find({ kind: "note" }).answer.entries.map((e) => e.name), ["c1", "c2", "c3"]);
+		const archAfterRec1 = fs.readFileSync(crashArch, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
 		assert.deepEqual(archAfterRec1.map((r) => r.position), [1], "position 1 is not duplicated in archive");
-		port.close();
 
-		// Now write two large changes (> 40 KiB each, so > 80 KiB total > 64 KiB tail chunk) at T0 + 1100, then advance to T0 + 2500 so they archive, and simulate crash before rename on the already-based log (Reading 51 o:F2).
-		fs.writeFileSync(file, compactedAt1);
-		port = createFileStoragePort(file, { archiveFile: arch });
-		store = openEntityStore({ storage: port, clock: { now: () => now }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS }).store;
-		now = T0 + 1_100;
-		assert.equal(store.create({ kind: "any", name: "big-4", tags: [], body: { pointer: "https://e.x/4", summary: "s".repeat(40_000) } }, write(4)).outcome, "answered");
-		assert.equal(store.create({ kind: "any", name: "big-5", tags: [], body: { pointer: "https://e.x/5", summary: "s".repeat(40_000) } }, write(5)).outcome, "answered");
-		const basedBeforeSecondCompact = fs.readFileSync(file);
-		now = T0 + 2_500;
-		store.create(note("n6"), write(6));
-		port.close();
-		// Restore file to `basedBeforeSecondCompact` (which has base at 1 and changes 2, 3, 4, 5) while arch has 1..5 (> 80 KiB after position 1!).
-		fs.writeFileSync(file, basedBeforeSecondCompact);
-		port = createFileStoragePort(file, { archiveFile: arch });
-		const rec2 = openEntityStore({ storage: port, clock: { now: () => now }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS });
+		// Now write two large changes (> 40 KiB each, so > 80 KiB total > 64 KiB tail chunk) at T0 + 1100, then intercept renameSync at T0 + 2500 on the already-based log.
+		crashNow = T0 + 1_100;
+		assert.equal(rec1.store.create({ kind: "any", name: "big-4", tags: [], body: { pointer: "https://e.x/4", summary: "s".repeat(40_000) } }, write(4)).outcome, "answered");
+		assert.equal(rec1.store.create({ kind: "any", name: "big-5", tags: [], body: { pointer: "https://e.x/5", summary: "s".repeat(40_000) } }, write(5)).outcome, "answered");
+		fs.renameSync = () => { throw new Error("simulated crash before second rename"); };
+		try {
+			crashNow = T0 + 2_500;
+			assert.throws(() => rec1.store.create(note("c6"), write(6)), (e) => e.code === "store-stopped");
+		} finally {
+			fs.renameSync = origRename;
+		}
+		crashPort.close();
+		crashPort = createFileStoragePort(crashFile, { archiveFile: crashArch });
+		const rec2 = openEntityStore({ storage: crashPort, clock: { now: () => crashNow }, historyMs: 1_000, maxEntityBytes: 65_536, kinds: KINDS });
 		assert.equal(rec2.opened, true, "crash-before-rename recovery on already-based log scans backwards across > 64 KiB overlap to B.position");
-		const archAfterRec2 = fs.readFileSync(arch, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
+		assert.equal(rec2.store.historyBound().answer.position, 6);
+		assert.deepEqual(rec2.store.find({ kind: "note" }).answer.entries.map((e) => e.name), ["c1", "c2", "c3", "c6"]);
+		assert.deepEqual(rec2.store.find({ kind: "any" }).answer.entries.map((e) => e.name), ["big-4", "big-5"]);
+		const archAfterRec2 = fs.readFileSync(crashArch, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
 		assert.deepEqual(archAfterRec2.map((r) => r.position), [1, 2, 3, 4, 5], "no duplicate or lost archived changes");
-		port.close();
+		const activeAfterRec2 = fs.readFileSync(crashFile, "utf8").split("\n").slice(1, -1).map((l) => JSON.parse(l));
+		assert.deepEqual(activeAfterRec2.map((r) => [r.type, r.position]), [["base", 5], ["change", 6]], "active log re-compacted to base 5 and change 6");
+		crashPort.close();
 	});
 
 	// 7. Opening-time compact throw returns log-unwritable; runtime compact throw stops store and rejects pending waitForChange (Reading 49 o:F5, Reading 51 o:F4).
