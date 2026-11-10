@@ -87,6 +87,9 @@ test("no source file reads the wall clock: time comes only from the clock port t
 	}
 });
 
-test("the package depends on shape-check through a file: link, and nothing else at run time", () => {
-	assert.deepEqual(pkg.dependencies, { "@apnex/shape-check": "file:../shape-check" });
+const validDepSpec = (name, spec) => spec === `file:../${name}` || new RegExp(`^https://github\\.com/apnex/${name}/releases/download/v0\\.\\d+\\.\\d+/apnex-${name}-0\\.\\d+\\.\\d+\\.tgz$`).test(spec);
+
+test("the package depends on shape-check through a file: link or pinned GitHub release URL, and nothing else at run time", () => {
+	assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["@apnex/shape-check"]);
+	assert.ok(validDepSpec("shape-check", pkg.dependencies["@apnex/shape-check"]));
 });
