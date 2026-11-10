@@ -1,6 +1,6 @@
 {
   "name": "@apnex/entity-store",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Keep typed, tagged entities in a single order of changes that every read can be dated against.",
   "license": "MIT",
@@ -11,7 +11,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -38,7 +38,7 @@
     "docs:check": "tools/check-docs.sh"
   },
   "dependencies": {
-    "@apnex/shape-check": "file:../shape-check"
+    "@apnex/shape-check": "https://github.com/apnex/shape-check/releases/download/v0.1.0/apnex-shape-check-0.1.0.tgz"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

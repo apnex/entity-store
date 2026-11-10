@@ -1,8 +1,8 @@
 ---
-id: unminted
+id: C4
 category: component
 title: entity-store - typed, tagged entities in one order of changes
-status: draft
+status: active
 hydrate-when: Several parties share small typed records, and each must know how current its view is and what changed since it last looked
 sovereignty: internal
 supersedes: []
@@ -12,8 +12,8 @@ related: [C0, A1, A3, T1]
 # entity-store
 
 The contract of record for entity-store: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
-It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
-The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
+It also carries the fields of a mission-kit registry entry, and that entry is generated from this file, never written as a second copy.\
+Admitted to mission-kit's component registry as `C4`, its first release `0.1.0` (`docs/DECISIONS.md` `D3`); its frontmatter is the entry's.
 
 ---
 
@@ -55,7 +55,7 @@ When independent actors write the same store, the system holding it is also mult
 
 ## Reference
 
-This repository, `apnex/entity-store`, private until its first working code is certified.\
+This repository, `apnex/entity-store`, and its package `@apnex/entity-store`, released only by its own CI as a tarball attached to a GitHub release, drafted, verified and then published (`.github/workflows/release.yml`).\
 The package `@apnex/entity-store` exports `openEntityStore` and `createMemoryStoragePort` (implementing `compact(records)` alongside `load` and `append`), `@apnex/entity-store/file-storage` exports `createFileStoragePort` (accepting `options?: {archiveFile?: string}`, rotating evicted `change` records to `archiveFile` when given, validating `archiveFile` from its `64`-byte header and a backwards-doubling tail read starting at `64` KiB against `base`'s `position`, `at` and `digest`, and replacing `file` atomically via `${file}.compact`) and `LOG_HEADER`, and `@apnex/entity-store/contract-suite` exports `registerEntityStoreSuite` and `contractSuiteRows`, the shared contract suite, as `export-map.json` records.\
 `changes-since-position` is served through `openEntityStore` as `changes`, and `follow-narrowed-set` as `follow` and `waitForChange`, each carried by the shared contract suite, built in zorg's Delta 4 under `D64` (zorg's target, `EM16` and `EM17`); the suite's cases of `follow` judge the items and `through` across pages and keep within the input shape entity-api serves `follow` under, so entity-api runs them remotely, and the exact pages, inputs beyond that shape, programming errors and `waitForChange` are this component's own tests.\
 It depends on `@apnex/shape-check` through a `file:` link, and only its file storage port, `src/file-storage-adapter.ts`, imports a module particular to one runtime.
