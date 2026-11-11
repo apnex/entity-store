@@ -9,8 +9,11 @@
  * makes its entity the entity's state, a delete removes the entity and frees its name, each change makes its
  * write identity name it, and every time advances the store's time (EM8).
  */
-import type { JsonObject, JsonValue } from "@apnex/shape-check";
+import { nestingDepth, toCanonicalJson, utf8ByteLength, type JsonObject, type JsonValue } from "@apnex/shape-check";
 import type { BaseRecord, ChangeItem, ChangeRecord, DeletedItem, EntityEnvelope, LoadedRecord, LogRecord, WriteAnswer } from "./store-types.js";
+
+/** The bounds of a change's note (D4, D5): at most 16 levels and 524288 bytes of canonical UTF-8 JSON. */
+export const NOTE_LIMITS = Object.freeze({ depth: 16, bytes: 524_288 });
 
 /** True for a JSON object, false for null, arrays and scalars. */
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -100,7 +103,10 @@ export class RecoveredState {
 		}
 	}
 
-	/** Applies a change: its writes in order, its write identity, its position, its time and its items. */
+	/**
+	 * Applies a change: its writes in order, its write identity, its position, its time and its items, the first
+	 * item carrying the change's note when it has one (D4, D5).
+	 */
 	apply(record: ChangeRecord, atMs: number): void {
 		const items: ChangeItem[] = [];
 		for (const write of record.writes) {
@@ -116,6 +122,8 @@ export class RecoveredState {
 			versions.push({ position: record.position, entity: write.entity });
 			this.history.set(write.id, versions);
 		}
+		// A copy of the first item, never the envelope the entity's history holds, carries the note.
+		if (Object.hasOwn(record, "note") && items.length > 0) items[0] = { ...(items[0] as ChangeItem), note: structuredClone(record.note as JsonValue) };
 		this.writes.set(record.writeId, { position: record.position, at: atMs, digest: record.digest, answer: record.answer });
 		this.position = record.position;
 		this.changeTimes.set(record.position, atMs);
@@ -302,20 +310,39 @@ function checkEnvelope(value: unknown, where: string): Check {
 	return checkStamp(value.created, `${where}.created`) ?? checkStamp(value.changed, `${where}.changed`);
 }
 
-// An answer is EM10's: `position` with `entity` for a create or update, or with `deleted` for a delete.
+function checkDeleted(deleted: unknown, where: string): Check {
+	if (!isJsonObject(deleted)) return `${where} is not an object`;
+	const deletedFields = exactFields(deleted, ["id", "kind", "name", "revision"], where);
+	if (deletedFields) return deletedFields;
+	if (!isString(deleted.id) || !isString(deleted.kind) || !isString(deleted.name)) return `${where} has an id, kind or name that is not a string`;
+	return isPositionNumber(deleted.revision) ? undefined : `${where}.revision is not a whole number from 1`;
+}
+
+// An answer is EM10's: `position` with `entity` for a create or update, or with `deleted` for a delete; or a
+// change's, the third variant: `position` with `writes`, one `{ entity }` or `{ deleted }` for each write (D4, D5).
 function checkAnswer(value: unknown): Check {
 	const where = "the change's answer";
 	if (!isJsonObject(value)) return `${where} is not an object`;
+	if (Object.hasOwn(value, "writes")) {
+		const fields = exactFields(value, ["position", "writes"], where);
+		if (fields) return fields;
+		if (!isPositionNumber(value.position)) return `${where}.position is not a position`;
+		if (!Array.isArray(value.writes) || value.writes.length === 0) return `${where}.writes is not a list of one or more answers`;
+		for (const [i, item] of (value.writes as JsonValue[]).entries()) {
+			const at = `${where}.writes[${i}]`;
+			if (!isJsonObject(item)) return `${at} is not an object`;
+			const itemFields = Object.hasOwn(item, "deleted") ? exactFields(item, ["deleted"], at) : exactFields(item, ["entity"], at);
+			if (itemFields) return itemFields;
+			const fault = Object.hasOwn(item, "deleted") ? checkDeleted(item.deleted, `${at}.deleted`) : checkEnvelope(item.entity, `${at}.entity`);
+			if (fault) return fault;
+		}
+		return undefined;
+	}
 	if (Object.hasOwn(value, "deleted")) {
 		const fields = exactFields(value, ["position", "deleted"], where);
 		if (fields) return fields;
 		if (!isPositionNumber(value.position)) return `${where}.position is not a position`;
-		const deleted = value.deleted;
-		if (!isJsonObject(deleted)) return `${where}.deleted is not an object`;
-		const deletedFields = exactFields(deleted, ["id", "kind", "name", "revision"], `${where}.deleted`);
-		if (deletedFields) return deletedFields;
-		if (!isString(deleted.id) || !isString(deleted.kind) || !isString(deleted.name)) return `${where}.deleted has an id, kind or name that is not a string`;
-		return isPositionNumber(deleted.revision) ? undefined : `${where}.deleted.revision is not a whole number from 1`;
+		return checkDeleted(value.deleted, `${where}.deleted`);
 	}
 	const fields = exactFields(value, ["position", "entity"], where);
 	if (fields) return fields;
@@ -323,11 +350,24 @@ function checkAnswer(value: unknown): Check {
 	return checkEnvelope(value.entity, `${where}.entity`);
 }
 
+// A change's note, when its record holds one (D4, D5): within its depth and its size in canonical UTF-8 JSON. It
+// is plain JSON already, as every record is read as plain data.
+function checkNote(note: JsonValue): Check {
+	const depth = nestingDepth(note);
+	if (depth > NOTE_LIMITS.depth) return `the change's note nests ${depth} levels, more than ${NOTE_LIMITS.depth}`;
+	const bytes = utf8ByteLength(toCanonicalJson(note));
+	if (bytes > NOTE_LIMITS.bytes) return `the change's note is ${bytes} bytes of canonical JSON, more than ${NOTE_LIMITS.bytes}`;
+	return undefined;
+}
+
+const CHANGE_FIELDS = ["type", "position", "at", "writer", "writeId", "digest", "answer", "writes"] as const;
+
 /** Checks a `change` record's fields and types without requiring a specific expected position (used by archive validation). */
 export function checkChangeRecordShape(record: unknown): Check {
 	if (!isJsonObject(record)) return "the record is not an object";
 	if (record.type !== "change") return "the record's type is not change";
-	const fields = exactFields(record, ["type", "position", "at", "writer", "writeId", "digest", "answer", "writes"], "the change record");
+	const hasNote = Object.hasOwn(record, "note");
+	const fields = exactFields(record, hasNote ? [...CHANGE_FIELDS, "note"] : CHANGE_FIELDS, "the change record");
 	if (fields) return fields;
 	if (!isPositionNumber(record.position)) return "the change's position is not a whole number from 1";
 	if (parseTime(record.at) === undefined) return "the change's at is not a time in UTC to the millisecond";
@@ -351,7 +391,9 @@ export function checkChangeRecordShape(record: unknown): Check {
 			if (envelope) return envelope;
 		}
 	}
-	return undefined;
+	const answered = record.answer as JsonObject;
+	if (Object.hasOwn(answered, "writes") && (answered.writes as JsonValue[]).length !== (record.writes as JsonValue[]).length) return "the change's answer does not hold one answer for each write";
+	return hasNote ? checkNote(record.note as JsonValue) : undefined;
 }
 
 function checkBaseRecord(record: Record<string, unknown>, isFirstRecord: boolean): Check {

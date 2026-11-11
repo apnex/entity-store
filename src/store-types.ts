@@ -106,8 +106,16 @@ export interface DeletedItem {
 	writer: string;
 }
 
-/** One item of `changes` (EM16): the envelope a create or an update left, or what a delete left. */
-export type ChangeItem = EntityEnvelope | DeletedItem;
+/** The note a change carries (D4, D5), on the first of that change's items in `changes` and `follow` only. */
+export interface ChangeNote {
+	note?: JsonValue;
+}
+
+/**
+ * One item of `changes` (EM16): the envelope a create or an update left, or what a delete left; the first item of
+ * a change carrying a note also holds the note (D4, D5).
+ */
+export type ChangeItem = (EntityEnvelope | DeletedItem) & ChangeNote;
 
 /**
  * One page of `changes` (EM16): the store's position when it answered, one item for each write of each
@@ -131,9 +139,10 @@ export type FollowEvent = "entering" | "changing" | "leaving";
 
 /**
  * One item of `follow` (EM17): the event, the change's position, time and writer, the entity's identity, and the
- * envelope as the change left it, or null when the change left the entity deleted.
+ * envelope as the change left it, or null when the change left the entity deleted; the first of a change's items in
+ * an answer also holds the change's note, when it has one (D4, D5).
  */
-export interface FollowItem {
+export interface FollowItem extends ChangeNote {
 	event: FollowEvent;
 	position: number;
 	at: string;
@@ -164,18 +173,56 @@ export interface HistoryBoundAnswer {
 	historyMs: number;
 }
 
-/** The answer to a write: the answer of whichever operation it was. */
-export type WriteAnswer = EntityAnswer | DeleteAnswer;
+/** One write of a change (D4, D5): an operation and its input, in the form the single operation takes. */
+export type ChangeWrite =
+	| { operation: "create"; input: CreateInput }
+	| { operation: "update"; input: UpdateInput }
+	| { operation: "delete"; input: DeleteInput };
 
-/** The codes entity-store refuses a write or read with (EM9), in the order it checks them. */
+/**
+ * The input of `change` (D4, D5): 1 to 2,000 writes; optionally the store position its writer last saw; and
+ * optionally a note, plain JSON the store never interprets, which an absent or undefined note leaves out.
+ */
+export interface ChangeInput {
+	writes: ChangeWrite[];
+	expectedPosition?: number;
+	note?: JsonValue;
+}
+
+/** What one write of a change answers: the envelope a create or an update left, or what a delete left. */
+export type ChangeWriteAnswer = { entity: EntityEnvelope } | { deleted: { id: string; kind: string; name: string; revision: number } };
+
+/** The answer to a `change` (D4, D5): its one position, and each write's answer in the order the writes were given. */
+export interface ChangeAnswer {
+	position: number;
+	writes: ChangeWriteAnswer[];
+}
+
+/** The answer to a write: the answer of whichever operation it was, the third variant a `change`'s. */
+export type WriteAnswer = EntityAnswer | DeleteAnswer | ChangeAnswer;
+
+/**
+ * The codes entity-store refuses a write or read with (EM9), in the order it checks them. A `change` checks
+ * `note-not-plain` first, since a note that is not plain JSON gives no request to recognise; then the identity and
+ * the writer; then `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large` and `position-moved`; then
+ * each write in order as its single operation checks it, with `duplicate-target` after `empty-update`, a refusal of a
+ * write naming its `index`; and `change-too-large` last, on the record the change would append (D4, D5).
+ */
 export type StoreRefusalCode =
+	| "note-not-plain"
 	| "identity-reused"
 	| "writer-too-long"
+	| "empty-change"
+	| "too-many-writes"
+	| "note-too-deep"
+	| "note-too-large"
+	| "position-moved"
 	| "unknown-kind"
 	| "invalid-position"
 	| "position-not-held"
 	| "invalid-target"
 	| "empty-update"
+	| "duplicate-target"
 	| "not-found"
 	| "revision-moved"
 	| "invalid-name"
@@ -186,7 +233,8 @@ export type StoreRefusalCode =
 	| "misfit"
 	| "entity-too-large"
 	| "entity-too-deep"
-	| "unsafe-number";
+	| "unsafe-number"
+	| "change-too-large";
 
 /** The shared refusal record (EM9): which part refused, why, how to fix it, and the facts its code names. */
 export interface StoreRefusal {
@@ -236,7 +284,11 @@ export interface BaseRecord {
 	entities: EntityEnvelope[];
 }
 
-/** A change record (EM15): one or more writes taking one position (D33). */
+/**
+ * A change record (EM15): one or more writes taking one position (D33), and the change's note, in canonical form,
+ * after every other field when the change has one and absent when it has none, so a record without a note is
+ * exactly what 0.1.0 wrote (D4, D5).
+ */
 export interface ChangeRecord {
 	type: "change";
 	position: number;
@@ -246,6 +298,7 @@ export interface ChangeRecord {
 	digest: string;
 	answer: WriteAnswer;
 	writes: WriteRecord[];
+	note?: JsonValue;
 }
 
 /** A time record (EM15, EM8): the store's time, appended before a decision about retention; it takes no position. */
@@ -337,6 +390,8 @@ export interface EntityStore {
 	create(input: CreateInput, write: WriteContext): StoreOutcome<EntityAnswer>;
 	update(input: UpdateInput, write: WriteContext): StoreOutcome<EntityAnswer>;
 	delete(input: DeleteInput, write: WriteContext): StoreOutcome<DeleteAnswer>;
+	/** Makes a change of 1 to 2,000 writes, whole at one position or not at all (D4, D5). */
+	change(input: ChangeInput, write: WriteContext): StoreOutcome<ChangeAnswer>;
 	read(input: ReadInput): StoreOutcome<ReadAnswer>;
 	find(input: FindInput): StoreOutcome<FindAnswer>;
 	historyBound(): StoreOutcome<HistoryBoundAnswer>;
@@ -348,4 +403,6 @@ export interface EntityStore {
 	waitForChange(after: number, options?: WaitOptions): Promise<number>;
 	/** Says whether a write is a recognised repeat, without making it (EM13, step 2). */
 	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck;
+	/** Says whether a change is a recognised repeat, without making it (D4, D5). */
+	checkRepeat(operation: "change", input: ChangeInput, write: WriteContext): RepeatCheck;
 }

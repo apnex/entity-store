@@ -21,13 +21,17 @@ import {
 	type PreparedShape,
 	type ShapeMisfit,
 } from "@apnex/shape-check";
-import { compareCodePoints, isJsonObject, recoverLog, type RecoveredState } from "./change-log.js";
-import { requireInputShape } from "./operation-inputs.js";
+import { compareCodePoints, isJsonObject, NOTE_LIMITS, recoverLog, type RecoveredState } from "./change-log.js";
+import { requireChangeWriteShapes, requireInputShape } from "./operation-inputs.js";
 import { sha256Hex } from "./sha256.js";
 import { cutTo128, storeRefusal } from "./store-refusal.js";
 import type {
+	ChangeAnswer,
+	ChangeInput,
 	ChangeItem,
 	ChangeRecord,
+	ChangeWrite,
+	ChangeWriteAnswer,
 	ChangesAnswer,
 	ChangesInput,
 	ClockPort,
@@ -60,6 +64,7 @@ import type {
 	WriteAnswer,
 	WriteContext,
 	WriteOperation,
+	WriteRecord,
 } from "./store-types.js";
 
 /** EM1's name pattern. */
@@ -82,9 +87,26 @@ export const LIMITS = Object.freeze({
 	/** EM8's clock range: 0000-01-01T00:00:00.000Z to 9999-12-31T23:59:59.999Z, the times written with a four-digit year. */
 	clockMsMin: -62167219200000,
 	clockMsMax: 253402300799999,
+	/** A change's writes, at most (D4, D5). */
+	changeWrites: 2000,
+	/** A change record's canonical JSON, at most, so a page holding it stays within a 16 MiB carrier (D4, D5). */
+	changeBytes: 8_388_608,
+	/** A change's note, at most, in levels and in bytes of canonical UTF-8 JSON (D4, D5). */
+	noteDepth: NOTE_LIMITS.depth,
+	noteBytes: NOTE_LIMITS.bytes,
 });
 
 type Judge = (body: JsonValue) => readonly ShapeMisfit[];
+
+/**
+ * The state a write is judged against: the store's own for a single operation, or the store's as the writes before
+ * it in a change leave it (D4, D5), with the earlier write, if any, of the change that targets the same entity.
+ */
+interface EntityView {
+	resolve(target: { id?: string; kind?: string; name?: string }): EntityEnvelope | undefined;
+	nameHolder(kind: string, name: string): string | undefined;
+	earlierWrite(target: { id?: string; kind?: string; name?: string }): { id: string; index: number } | undefined;
+}
 
 /** Opens a store over a storage port, recovering every record the port holds, or refuses naming the reason. */
 export function openEntityStore(options: StoreOptions): StoreOpening {
@@ -193,6 +215,12 @@ class Store implements EntityStore {
 	#isStopped = false;
 	/** The waits of `waitForChange` still waiting (EM17). */
 	readonly #waits = new Set<Wait>();
+	/** The store's own state, as a single operation judges against it. */
+	readonly #stateView: EntityView = {
+		resolve: (target) => this.state.resolve(target),
+		nameHolder: (kind, name) => this.state.names.get(kind)?.get(name),
+		earlierWrite: () => undefined,
+	};
 
 	constructor(
 		private readonly storage: StoragePort,
@@ -272,8 +300,18 @@ class Store implements EntityStore {
 		return now - at < this.historyMs;
 	}
 
-	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck {
+	checkRepeat(operation: WriteOperation, input: CreateInput | UpdateInput | DeleteInput, write: WriteContext): RepeatCheck;
+	checkRepeat(operation: "change", input: ChangeInput, write: WriteContext): RepeatCheck;
+	checkRepeat(operation: WriteOperation | "change", input: CreateInput | UpdateInput | DeleteInput | ChangeInput, write: WriteContext): RepeatCheck {
 		this.#alive();
+		if (operation === "change") {
+			// A change whose note is not plain JSON gives no request to recognise, and the change refuses it (D4, D5).
+			const read = readChangeInput(input);
+			requireWrite(write);
+			const clock = this.#now();
+			if (read.note.given && !read.note.plain) return { repeat: "none" };
+			return this.#checkRepeat("change", changeRequest(read), write, clock);
+		}
 		const json = snapshotInput(input);
 		requireInputShape(operation, json);
 		requireWrite(write);
@@ -281,7 +319,7 @@ class Store implements EntityStore {
 	}
 
 	// `clock` is the store's time read once for the call, so a clock outside EM8's range has already thrown.
-	#checkRepeat(operation: WriteOperation, input: JsonValue, write: WriteContext, clock: number): RepeatCheck {
+	#checkRepeat(operation: WriteOperation | "change", input: JsonValue, write: WriteContext, clock: number): RepeatCheck {
 		const remembered = this.state.writes.get(write.writeId);
 		if (remembered === undefined) return { repeat: "none" };
 		const now = this.#timeForDecision(clock);
@@ -291,15 +329,83 @@ class Store implements EntityStore {
 	}
 
 	create(input: CreateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("create", input, write, (now, snap) => this.#planCreate(snap as unknown as CreateInput, write, now)) as StoreOutcome<EntityAnswer>;
+		return this.#write("create", input, write, (now, snap) => this.#planCreate(snap as unknown as CreateInput, write, now, this.#stateView, 1)) as StoreOutcome<EntityAnswer>;
 	}
 
 	update(input: UpdateInput, write: WriteContext): StoreOutcome<EntityAnswer> {
-		return this.#write("update", input, write, (now, snap) => this.#planUpdate(snap as unknown as UpdateInput, write, now)) as StoreOutcome<EntityAnswer>;
+		return this.#write("update", input, write, (now, snap) => this.#planUpdate(snap as unknown as UpdateInput, write, now, this.#stateView)) as StoreOutcome<EntityAnswer>;
 	}
 
 	delete(input: DeleteInput, write: WriteContext): StoreOutcome<DeleteAnswer> {
-		return this.#write("delete", input, write, (now, snap) => this.#planDelete(snap as unknown as DeleteInput, now)) as StoreOutcome<DeleteAnswer>;
+		return this.#write("delete", input, write, (now, snap) => this.#planDelete(snap as unknown as DeleteInput, now, this.#stateView)) as StoreOutcome<DeleteAnswer>;
+	}
+
+	/**
+	 * A change of many writes (D4, D5): its input's shape and each write's, thrown; then the note's plainness, the
+	 * identity, the writer, the count, the note's bounds and the expected position; then each write in order, judged
+	 * as its single operation judges it against the state the writes before it leave, one refusal refusing the whole
+	 * change and naming the write's index; then the record's size; then the change, appended before it is seen.
+	 */
+	change(rawInput: ChangeInput, write: WriteContext): StoreOutcome<ChangeAnswer> {
+		this.#alive();
+		const read = readChangeInput(rawInput);
+		requireWrite(write);
+		const now = this.#now();
+		const note = read.note;
+		if (note.given && !note.plain) return { outcome: "refused", refusal: storeRefusal("note-not-plain") };
+		const kept = note.given && note.plain ? { value: note.value } : undefined;
+		const input = changeRequest(read);
+		const repeat = this.#checkRepeat("change", input, write, now);
+		if (repeat.repeat === "recognised") return { outcome: "answered", answer: repeat.answer as ChangeAnswer };
+		if (repeat.repeat === "identity-reused") return { outcome: "refused", refusal: repeat.refusal };
+		const writerLength = codePointLength(write.writer);
+		if (writerLength > LIMITS.writerCodePoints) return { outcome: "refused", refusal: storeRefusal("writer-too-long", {}, { length: writerLength, limit: LIMITS.writerCodePoints }) };
+		const writes = read.rest.writes as unknown as ChangeWrite[];
+		if (writes.length === 0) return { outcome: "refused", refusal: storeRefusal("empty-change") };
+		if (writes.length > LIMITS.changeWrites) return { outcome: "refused", refusal: storeRefusal("too-many-writes", {}, { count: writes.length, limit: LIMITS.changeWrites }) };
+		if (kept !== undefined) {
+			const depth = nestingDepth(kept.value);
+			if (depth > LIMITS.noteDepth) return { outcome: "refused", refusal: storeRefusal("note-too-deep", {}, { depth, limit: LIMITS.noteDepth }) };
+			const bytes = canonicalSize(kept.value);
+			if (bytes > LIMITS.noteBytes) return { outcome: "refused", refusal: storeRefusal("note-too-large", {}, { bytes, limit: LIMITS.noteBytes }) };
+		}
+		const expected = read.rest.expectedPosition;
+		if (typeof expected === "number" && expected !== this.state.position) {
+			return { outcome: "refused", refusal: storeRefusal("position-moved", {}, { expected, current: this.state.position }) };
+		}
+
+		const scratch = new ChangeScratch(this.state);
+		const answers: ChangeWriteAnswer[] = [];
+		const records: WriteRecord[] = [];
+		const next = this.#next(now);
+		for (const [index, item] of writes.entries()) {
+			const planned = item.operation === "create" ? this.#planCreate(item.input, write, now, scratch, index + 1)
+				: item.operation === "update" ? this.#planUpdate(item.input, write, now, scratch)
+				: this.#planDelete(item.input, now, scratch);
+			if ("part" in planned) return { outcome: "refused", refusal: { ...planned, details: { ...planned.details, index } } };
+			scratch.apply(planned.id, index, planned.previous, planned.entity);
+			answers.push("deleted" in planned.answer ? { deleted: planned.answer.deleted } : { entity: (planned.answer as EntityAnswer).entity });
+			records.push({ operation: item.operation, id: planned.id, entity: planned.entity });
+		}
+		const answer: ChangeAnswer = { position: next.position, writes: answers };
+		const record: ChangeRecord = {
+			type: "change",
+			position: next.position,
+			at: next.at,
+			writer: write.writer,
+			writeId: write.writeId,
+			digest: writeDigest("change", input, write.writer),
+			answer,
+			writes: records,
+		};
+		if (kept !== undefined) record.note = kept.value;
+		const bytes = changeRecordSize(record, answer);
+		if (bytes > LIMITS.changeBytes) return { outcome: "refused", refusal: storeRefusal("change-too-large", {}, { bytes, limit: LIMITS.changeBytes }) };
+		this.#append(record);
+		this.state.apply(record, next.atMs);
+		this.#forgetExpired();
+		this.#wake();
+		return { outcome: "answered", answer: cloneValue(answer) };
 	}
 
 	// A write: its identity first (EM7), then the rows of EM9 in order, then the change, appended before it is seen.
@@ -346,27 +452,36 @@ class Store implements EntityStore {
 		return kind !== undefined && !this.judges.has(kind) ? storeRefusal("unknown-kind", { kind }) : undefined;
 	}
 
-	#planCreate(input: CreateInput, write: WriteContext, now: number): Plan | StoreRefusal {
+	// `place` is the write's place in its change, counting from 1, and 1 for a single create (D4, D5).
+	#planCreate(input: CreateInput, write: WriteContext, now: number, view: EntityView, place: number): Plan | StoreRefusal {
 		const refusal = this.#unknownKind(input.kind)
-			?? this.#nameRefusal(input.kind, input.name, undefined)
+			?? this.#nameRefusal(input.kind, input.name, undefined, view)
 			?? tagRefusal(input.tags);
 		if (refusal) return refusal;
 		const next = this.#next(now);
-		const id = `e${next.position}.1`;
+		const id = `e${next.position}.${place}`;
 		const stamp = { position: next.position, at: next.at, writer: write.writer };
 		const entity: EntityEnvelope = { id, kind: input.kind, name: input.name, tags: sortTags(input.tags), body: input.body, revision: 1, created: stamp, changed: { ...stamp } };
-		return this.#envelopeRefusal(entity) ?? { ...next, id, entity, answer: { position: next.position, entity } };
+		return this.#envelopeRefusal(entity) ?? { ...next, id, previous: null, entity, answer: { position: next.position, entity } };
 	}
 
-	#planUpdate(input: UpdateInput, write: WriteContext, now: number): Plan | StoreRefusal {
+	// duplicate-target, which only a change can meet, comes once the target is known to name one entity (D4, D5).
+	#duplicateRefusal(target: { id?: string; kind?: string; name?: string }, view: EntityView): StoreRefusal | undefined {
+		const earlier = view.earlierWrite(target);
+		return earlier === undefined ? undefined : storeRefusal("duplicate-target", {}, { earlierIndex: earlier.index, id: earlier.id });
+	}
+
+	#planUpdate(input: UpdateInput, write: WriteContext, now: number, view: EntityView): Plan | StoreRefusal {
 		const target = input.target;
 		let refusal = this.#unknownKind(target.kind) ?? targetRefusal(target);
 		if (refusal) return refusal;
 		if (input.name === undefined && input.tags === undefined && input.body === undefined) return storeRefusal("empty-update");
-		const current = this.state.resolve(target);
+		refusal = this.#duplicateRefusal(target, view);
+		if (refusal) return refusal;
+		const current = view.resolve(target);
 		if (current === undefined) return storeRefusal("not-found", { target: target as JsonObject });
 		refusal = revisionRefusal(input.expectedRevision, current.revision)
-			?? (input.name !== undefined ? this.#nameRefusal(current.kind, input.name, current.id) : undefined)
+			?? (input.name !== undefined ? this.#nameRefusal(current.kind, input.name, current.id, view) : undefined)
 			?? (input.tags !== undefined ? tagRefusal(input.tags) : undefined);
 		if (refusal) return refusal;
 		let body = current.body;
@@ -382,26 +497,26 @@ class Store implements EntityStore {
 			created: { ...current.created },
 			changed: { position: next.position, at: next.at, writer: write.writer },
 		};
-		return this.#envelopeRefusal(entity) ?? { ...next, id: entity.id, entity, answer: { position: next.position, entity } };
+		return this.#envelopeRefusal(entity) ?? { ...next, id: entity.id, previous: current, entity, answer: { position: next.position, entity } };
 	}
 
-	#planDelete(input: DeleteInput, now: number): Plan | StoreRefusal {
+	#planDelete(input: DeleteInput, now: number, view: EntityView): Plan | StoreRefusal {
 		const target = input.target;
-		let refusal = this.#unknownKind(target.kind) ?? targetRefusal(target);
+		let refusal = this.#unknownKind(target.kind) ?? targetRefusal(target) ?? this.#duplicateRefusal(target, view);
 		if (refusal) return refusal;
-		const current = this.state.resolve(target);
+		const current = view.resolve(target);
 		if (current === undefined) return storeRefusal("not-found", { target: target as JsonObject });
 		refusal = revisionRefusal(input.expectedRevision, current.revision);
 		if (refusal) return refusal;
 		const next = this.#next(now);
 		const deleted = { id: current.id, kind: current.kind, name: current.name, revision: current.revision + 1 };
-		return { ...next, id: current.id, entity: null, answer: { position: next.position, deleted } };
+		return { ...next, id: current.id, previous: current, entity: null, answer: { position: next.position, deleted } };
 	}
 
 	// invalid-name, then name-taken: a create or rename to a name another entity of the kind holds.
-	#nameRefusal(kind: string, name: string, self: string | undefined): StoreRefusal | undefined {
+	#nameRefusal(kind: string, name: string, self: string | undefined, view: EntityView): StoreRefusal | undefined {
 		if (!NAME_PATTERN.test(name)) return storeRefusal("invalid-name", { name });
-		const holder = this.state.names.get(kind)?.get(name);
+		const holder = view.nameHolder(kind, name);
 		if (holder !== undefined && holder !== self) return storeRefusal("name-taken", { kind, name }, { id: holder });
 		return undefined;
 	}
@@ -561,11 +676,13 @@ class Store implements EntityStore {
 	 * The items one change gives a follow (EM17): for each of its writes whose entity is of `kind`, in order, the
 	 * entity's state before the whole change compared with its state after it. The identity, time and writer come
 	 * from the items `changes` already keeps for the change - an envelope's `changed`, or what a delete left - so
-	 * following keeps nothing more.
+	 * following keeps nothing more. The first item given carries the change's note, which `changes` keeps on the
+	 * change's first item, when it has one (D4, D5).
 	 */
 	#followItems(position: number, kind: string, inSet: (entity: EntityEnvelope | null) => boolean): FollowItem[] {
 		const items: FollowItem[] = [];
-		for (const written of this.state.changeItems.get(position) as ChangeItem[]) {
+		const kept = this.state.changeItems.get(position) as ChangeItem[];
+		for (const written of kept) {
 			const stamp = "deleted" in written
 				? { id: written.deleted.id, at: written.at, writer: written.writer }
 				: { id: written.id, at: written.changed.at, writer: written.changed.writer };
@@ -578,6 +695,8 @@ class Store implements EntityStore {
 			if (event === undefined) continue;
 			items.push({ event, position, at: stamp.at, writer: stamp.writer, id, entity: after });
 		}
+		const first = kept[0];
+		if (items.length > 0 && first !== undefined && Object.hasOwn(first, "note")) items[0] = { ...(items[0] as FollowItem), note: first.note as JsonValue };
 		return items;
 	}
 
@@ -649,14 +768,113 @@ class Store implements EntityStore {
 	}
 }
 
-/** What a write that passed every check would change. */
+/** What a write that passed every check would change, and the entity's state before it. */
 interface Plan {
 	position: number;
 	atMs: number;
 	at: string;
 	id: string;
+	previous: EntityEnvelope | null;
 	entity: EntityEnvelope | null;
 	answer: WriteAnswer;
+}
+
+/**
+ * The store's state as the writes of a change judged so far would leave it (D4, D5), held apart from the store, so
+ * a change refused at any write leaves the store untouched: each entity those writes wrote, each name they freed or
+ * took, and the place in the change of the write that wrote each entity.
+ */
+class ChangeScratch implements EntityView {
+	readonly #entities = new Map<string, EntityEnvelope | null>();
+	readonly #names = new Map<string, Map<string, string | null>>();
+	readonly #written = new Map<string, number>();
+
+	constructor(private readonly state: RecoveredState) {}
+
+	nameHolder(kind: string, name: string): string | undefined {
+		const kindNames = this.#names.get(kind);
+		if (kindNames?.has(name)) return kindNames.get(name) ?? undefined;
+		return this.state.names.get(kind)?.get(name);
+	}
+
+	#idOf(target: { id?: string; kind?: string; name?: string }): string | undefined {
+		return target.id ?? this.nameHolder(target.kind as string, target.name as string);
+	}
+
+	resolve(target: { id?: string; kind?: string; name?: string }): EntityEnvelope | undefined {
+		const id = this.#idOf(target);
+		if (id === undefined) return undefined;
+		return this.#entities.has(id) ? this.#entities.get(id) ?? undefined : this.state.resolve({ id });
+	}
+
+	earlierWrite(target: { id?: string; kind?: string; name?: string }): { id: string; index: number } | undefined {
+		const id = this.#idOf(target);
+		const index = id === undefined ? undefined : this.#written.get(id);
+		return id === undefined || index === undefined ? undefined : { id, index };
+	}
+
+	/** Takes a write that passed every check: the name its entity held is freed, then the name it leaves is taken. */
+	apply(id: string, index: number, previous: EntityEnvelope | null, entity: EntityEnvelope | null): void {
+		const names = (kind: string): Map<string, string | null> => {
+			let kindNames = this.#names.get(kind);
+			if (kindNames === undefined) this.#names.set(kind, (kindNames = new Map()));
+			return kindNames;
+		};
+		if (previous !== null) names(previous.kind).set(previous.name, null);
+		if (entity !== null) names(entity.kind).set(entity.name, id);
+		this.#entities.set(id, entity);
+		this.#written.set(id, index);
+	}
+}
+
+/** How a change's note was given: not at all (or as undefined), as plain JSON, or as something else (D4, D5). */
+type NoteReading = { given: false } | { given: true; plain: false } | { given: true; plain: true; value: JsonValue };
+
+/** A change's input as read: everything but the note, snapshotted and shape-checked, and the note as read. */
+interface ChangeReading {
+	rest: JsonObject;
+	note: NoteReading;
+}
+
+/**
+ * Reads a change's input (D4, D5). The note is read through shape-check's `readPlainJson`, from its own data
+ * property, so none of the application's code runs to read it; an accessor or non-enumerable `note` is not plain.
+ * Everything else is snapshotted as every input is (SD8), and judged against change's shape and each write's input
+ * against its operation's shape, a misfit thrown as a TypeError. A note that is not plain is not thrown: the change
+ * refuses it, once the input's shape is known to be right.
+ */
+function readChangeInput(raw: unknown): ChangeReading {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new TypeError("the change input must be an object holding writes");
+	const proto: unknown = Object.getPrototypeOf(raw);
+	if (proto !== Object.prototype && proto !== null) throw new TypeError("a store input must be a JSON value");
+	let note: NoteReading = { given: false };
+	const descriptor = Object.getOwnPropertyDescriptor(raw, "note");
+	if (descriptor !== undefined) {
+		if (!Object.hasOwn(descriptor, "value") || descriptor.enumerable !== true) note = { given: true, plain: false };
+		else if (descriptor.value !== undefined) {
+			const reading = readPlainJson(descriptor.value);
+			note = reading.ok ? { given: true, plain: true, value: canonicalForm(reading.value) } : { given: true, plain: false };
+		}
+	}
+	const rest: { [name: string]: unknown } = {};
+	for (const name of Object.keys(raw)) {
+		if (name === "note") continue;
+		Object.defineProperty(rest, name, { value: (raw as { [name: string]: unknown })[name], enumerable: true, writable: true, configurable: true });
+	}
+	const json = snapshotInput(rest);
+	requireInputShape("change", json);
+	requireChangeWriteShapes((json as JsonObject).writes as unknown as ChangeWrite[]);
+	return { rest: json as JsonObject, note };
+}
+
+/** The whole request a change's digest is of: its writes, its expected position when given, and its note when given. */
+function changeRequest(read: ChangeReading): JsonObject {
+	return read.note.given && read.note.plain ? { ...read.rest, note: read.note.value } : read.rest;
+}
+
+/** A plain JSON value rebuilt from its canonical JSON (SD4), so its members are held in code-point order. */
+function canonicalForm(value: JsonValue): JsonValue {
+	return JSON.parse(toCanonicalJson(value)) as JsonValue;
 }
 
 const utf8Encoder = new TextEncoder();
@@ -664,6 +882,18 @@ const utf8Encoder = new TextEncoder();
 /** Size in UTF-8 bytes of a plain JSON value written in SD4's canonical form. */
 function canonicalSize(value: JsonValue): number {
 	return utf8ByteLength(toCanonicalJson(value));
+}
+
+/**
+ * The size in UTF-8 bytes of a change record's canonical JSON (D4, D5), measured one write at a time, so a change far
+ * beyond the bound is refused rather than made into one string larger than a runtime holds: the record with both
+ * lists of writes empty, then each item of each list, and the commas between them.
+ */
+function changeRecordSize(record: ChangeRecord, answer: ChangeAnswer): number {
+	let bytes = canonicalSize({ ...record, answer: { ...answer, writes: [] }, writes: [] } as unknown as JsonValue);
+	for (const item of answer.writes) bytes += canonicalSize(item as unknown as JsonValue);
+	for (const item of record.writes) bytes += canonicalSize(item as unknown as JsonValue);
+	return bytes + 2 * (record.writes.length - 1);
 }
 
 /** A write's digest (EM7): SHA-256 over the canonical JSON of the input as received, the operation and the writer. */

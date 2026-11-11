@@ -14,6 +14,11 @@ export function cutTo128(text: string): { text: string; truncated: boolean } {
 import type { StoreRefusal, StoreRefusalCode } from "./store-types.js";
 
 const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: string } } = {
+	"note-not-plain": {
+		what: "The change's note is not plain JSON.",
+		why: "A note is kept and served as data, read without running any of the application's code: null, booleans, finite numbers, strings, and plain arrays and plain objects of them, through their own enumerable data properties.",
+		fix: "Give the note as plain JSON data, or give no note.",
+	},
 	"identity-reused": {
 		what: "The write identity names an earlier change, made with a different request.",
 		why: "A write identity names one request while its change is within the history bound, so a repeat must be the same request from the same writer.",
@@ -23,6 +28,31 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 		what: "The writer is longer than 1024 Unicode code points.",
 		why: "Every change must fit one page of changes, and the change a delete makes carries its writer whole.",
 		fix: "Name the writer in at most 1024 code points.",
+	},
+	"empty-change": {
+		what: "The change holds no write.",
+		why: "A change is one or more writes taking one position.",
+		fix: "Give the change at least one write.",
+	},
+	"too-many-writes": {
+		what: "The change holds more writes than a change may.",
+		why: "A change holds at most 2000 writes, so the page of changes holding it stays within what a carrier admits.",
+		fix: "Split the work into changes of at most 2000 writes each.",
+	},
+	"note-too-deep": {
+		what: "The change's note nests more than 16 levels.",
+		why: "A note is carried on an item of changes and follow, which bounds its depth.",
+		fix: "Nest the note at most 16 levels.",
+	},
+	"note-too-large": {
+		what: "The change's note is larger than 524288 bytes of canonical JSON.",
+		why: "A note is kept in its change record and carried on an item of changes and follow, which bounds its size.",
+		fix: "Make the note smaller, or split the change so each part's note fits.",
+	},
+	"position-moved": {
+		what: "The store's position is not the one the change expected.",
+		why: "Another change landed after the position the change names.",
+		fix: "Read the changes since the position named, decide whether the change still applies, and send it naming the store's position.",
 	},
 	"unknown-kind": {
 		what: "The kind is not one this store was given.",
@@ -48,6 +78,11 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 		what: "The update names none of name, tags and body.",
 		why: "An update changes at least one of an entity's name, tags and body.",
 		fix: "Name at least one of name, tags and body.",
+	},
+	"duplicate-target": {
+		what: "Two writes of the change target one entity.",
+		why: "A change writes each entity at most once, judged by identity or by kind and name as the writes before it leave the names.",
+		fix: "Combine the writes to the entity into one, or make them in separate changes.",
 	},
 	"not-found": {
 		what: "No entity that is not deleted matches the target.",
@@ -103,6 +138,11 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 		what: "The entity the write would leave holds an integer more than 9007199254740991 from zero.",
 		why: "AGP cannot carry such an integer, so the entity could not be read remotely.",
 		fix: "Write the number as a string, or keep it within 9007199254740991 of zero.",
+	},
+	"change-too-large": {
+		what: "The change record the change would append is larger than 8388608 bytes of canonical JSON.",
+		why: "A page of changes or follow holding the change must stay within the 16 MiB a carrier admits.",
+		fix: "Split the change into smaller changes, or make its entities or its note smaller.",
 	},
 };
 
