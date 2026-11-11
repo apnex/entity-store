@@ -5,7 +5,9 @@
  *
  * The storage-port row runs locally only, in entity-store's own tests. The cases of follow-narrowed-set judge the
  * items and `through` across pages and keep within the input shape entity-api serves `follow` under, so they run
- * remotely too (zorg's target, EM17). Nothing here is particular to one runtime (D31).
+ * remotely too (zorg's target, EM17). The change of many writes, the expected position and the note (D4, D5) have no
+ * case here while entity-api does not carry them; they are entity-store's own tests. Nothing here is particular to
+ * one runtime (D31).
  */
 import { changeProvenanceCases } from "./suite/change-provenance-cases.js";
 import { changesSincePositionCases } from "./suite/changes-since-position-cases.js";

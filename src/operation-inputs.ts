@@ -18,6 +18,17 @@ export const OPERATION_INPUT_SHAPES = {
 	find: { type: "object", required: ["kind"], additionalProperties: false, properties: { kind: { type: "string" }, tags, after: { type: "string" }, asOf: { type: "integer" } } },
 	changes: { type: "object", required: ["since"], additionalProperties: false, properties: { since: { type: "integer" } } },
 	follow: { type: "object", required: ["kind", "since"], additionalProperties: false, properties: { kind: { type: "string" }, tags, since: { type: "integer" } } },
+	// D4, D5: each write's input is then judged against its own operation's shape (requireChangeWriteShapes).
+	change: {
+		type: "object",
+		required: ["writes"],
+		additionalProperties: false,
+		properties: {
+			writes: { type: "array", items: { type: "object", required: ["operation", "input"], additionalProperties: false, properties: { operation: { enum: ["create", "update", "delete"] }, input: { type: "object" } } } },
+			expectedPosition: { type: "integer" },
+			note: {},
+		},
+	},
 } as const;
 
 export type InputOperation = keyof typeof OPERATION_INPUT_SHAPES;
@@ -37,6 +48,23 @@ export function requireInputShape(operation: InputOperation, input: unknown): vo
 	const misfits = (prepared.get(operation) as (value: JsonInput) => readonly ShapeMisfit[])(input as JsonInput);
 	if (misfits.length > 0) {
 		const error = new TypeError(`the ${operation} input does not fit its shape: ${misfits.map((m) => `${m.pointer || "/"} ${m.fit}`).join("; ")}`);
+		(error as TypeError & { misfits: readonly ShapeMisfit[] }).misfits = misfits;
+		throw error;
+	}
+}
+
+/**
+ * Throws a TypeError naming every misfit, each pointer from the change's input, when a write of a change that fits
+ * change's shape holds an input that does not fit its operation's shape (D4, D5).
+ */
+export function requireChangeWriteShapes(writes: readonly { operation: "create" | "update" | "delete"; input: unknown }[]): void {
+	const misfits: ShapeMisfit[] = [];
+	for (const [index, write] of writes.entries()) {
+		const found = (prepared.get(write.operation) as (value: JsonInput) => readonly ShapeMisfit[])(write.input as JsonInput);
+		for (const misfit of found) misfits.push({ ...misfit, pointer: `/writes/${index}/input${misfit.pointer}` });
+	}
+	if (misfits.length > 0) {
+		const error = new TypeError(`the change input does not fit its shape: ${misfits.map((m) => `${m.pointer} ${m.fit}`).join("; ")}`);
 		(error as TypeError & { misfits: readonly ShapeMisfit[] }).misfits = misfits;
 		throw error;
 	}

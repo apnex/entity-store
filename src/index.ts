@@ -2,18 +2,25 @@
  * Public surface of entity-store: exactly the capabilities CONTRACT.md lists, and nothing else.
  * openEntityStore - positioned-entity-write, change-provenance, expected-revision-write, repeat-recognition,
  *   identity-name-lookup, find-by-kind-tags, changes-since-position, follow-narrowed-set (zorg's Delta 4, stage 5),
- *   stated-history-bound and store-refusal, with declared-shape-validation carried from shape-check.
+ *   stated-history-bound and store-refusal, with declared-shape-validation carried from shape-check; `change`, a change of
+ *   many writes with an optional expected position and note, extends positioned-entity-write, expected-revision-write,
+ *   change-provenance, repeat-recognition, storage-port and store-refusal (D4, D5).
  * createMemoryStoragePort - storage-port, in memory; the file port is `@apnex/entity-store/file-storage`.
  */
 export { openEntityStore } from "./entity-store.js";
 export { createMemoryStoragePort, type MemoryStoragePort } from "./memory-storage.js";
 export type {
 	BaseRecord,
+	ChangeAnswer,
+	ChangeInput,
 	ChangeItem,
+	ChangeNote,
 	ChangeRecord,
 	ChangesAnswer,
 	ChangesInput,
 	ChangeStamp,
+	ChangeWrite,
+	ChangeWriteAnswer,
 	ClockPort,
 	CreateInput,
 	DeleteAnswer,
