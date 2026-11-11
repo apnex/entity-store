@@ -69,8 +69,8 @@ The change takes exactly one position; an entity it creates takes the identity `
 Repeat recognition covers the whole change: the digest is of the whole request, and a repeat answers with the first answer; `checkRepeat("change", input, write)` asks it without making the change.\
 Its answer is a third `WriteAnswer` variant, `{ position, writes }`, `writes` holding, in the order the writes were given, `{ entity }` for a create or an update and `{ deleted }` for a delete, each as the single operation would answer it.\
 `changes` and `follow` give one item for each write of the change, as they do today.\
-A page of `changes` or `follow` holding a change can be far larger than its record, because each delete's item repeats the change's writer, which the record holds once: the page's bound is the writer's length times 2,000, not the record's 8 MiB.\
-Measured at build, 2,000 deletes under a writer of 1,024 control characters, each written as six bytes, make a record of 249,033 bytes and a page of 12,541,824; the independent check of this build put the worst case at about 16.55 MB, within the 16 MiB a carrier admits by about 1.4%.
+A page of `changes` or `follow` holding a change is bounded by roughly half its record, each envelope being held twice in the record and once on the page, plus the writer's length times the number of deletes, each delete's item repeating the writer the record holds once; so a page can be far larger than its record.\
+Measured at build, 2,000 deletes under a writer of 1,024 control characters, each written as six bytes, make a record of 249,033 bytes and a page of 12,541,824; the worst case, calculated by the independent check of this build, is about 16.55 MB, within the 16 MiB a carrier admits by about 1.4%.
 
 **The expected position (extends `expected-revision-write` and `store-refusal`).**\
 A change, of one write or many, may name `expectedPosition`, the store position its writer last saw.\

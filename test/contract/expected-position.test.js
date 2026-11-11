@@ -58,3 +58,15 @@ test("the expected position is judged before any write, so a moved position is w
 	const out = store.change({ writes: [create({ kind: "nope", name: "x", tags: [], body: 1 })], expectedPosition: 0 }, W("a", "c1"));
 	assert.equal(out.refusal.code, "position-moved");
 });
+
+test("a note holding an unsafe integer is refused for that before the expected position is judged, so a change with both is refused as note-unsafe-number", () => {
+	const { store, storage } = openLocal();
+	store.create(note("alpha"), W("a", "s1"));
+	const before = storage.records();
+	const out = store.change({ writes: [create(note("beta"))], expectedPosition: 0, note: { inverse: [{ n: 2 ** 53 }] } }, W("a", "c1"));
+	assert.equal(out.outcome, "refused");
+	assert.equal(out.refusal.code, "note-unsafe-number");
+	assert.deepEqual(out.refusal.details, { pointer: "/inverse/0/n" });
+	assert.equal(store.change({ writes: [create(note("beta"))], expectedPosition: 0, note: { inverse: [{ n: 2 ** 53 - 1 }] } }, W("a", "c2")).refusal.code, "position-moved", "a safe note leaves the moved position to be refused");
+	assert.deepEqual(storage.records(), before, "nothing was appended");
+});
