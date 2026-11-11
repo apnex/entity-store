@@ -342,7 +342,7 @@ class Store implements EntityStore {
 
 	/**
 	 * A change of many writes (D4, D5): its input's shape and each write's, thrown; then the note's plainness, the
-	 * identity, the writer, the count, the note's bounds and the expected position; then each write in order, judged
+	 * identity, the writer, the count, the note's bounds and integers and the expected position; then each write in order, judged
 	 * as its single operation judges it against the state the writes before it leave, one refusal refusing the whole
 	 * change and naming the write's index; then the record's size; then the change, appended before it is seen.
 	 */
@@ -368,6 +368,9 @@ class Store implements EntityStore {
 			if (depth > LIMITS.noteDepth) return { outcome: "refused", refusal: storeRefusal("note-too-deep", {}, { depth, limit: LIMITS.noteDepth }) };
 			const bytes = canonicalSize(kept.value);
 			if (bytes > LIMITS.noteBytes) return { outcome: "refused", refusal: storeRefusal("note-too-large", {}, { bytes, limit: LIMITS.noteBytes }) };
+			// As an entity's body is judged: the note is carried on items of changes and follow, which cross AGP.
+			const unsafe = firstUnsafeInteger(kept.value);
+			if (unsafe !== null) return { outcome: "refused", refusal: storeRefusal("note-unsafe-number", {}, { pointer: unsafe.pointer }) };
 		}
 		const expected = read.rest.expectedPosition;
 		if (typeof expected === "number" && expected !== this.state.position) {

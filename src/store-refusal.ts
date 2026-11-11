@@ -49,6 +49,11 @@ const TEXT: { [code in StoreRefusalCode]: { what: string; why: string; fix: stri
 		why: "A note is kept in its change record and carried on an item of changes and follow, which bounds its size.",
 		fix: "Make the note smaller, or split the change so each part's note fits.",
 	},
+	"note-unsafe-number": {
+		what: "The change's note holds an integer more than 9007199254740991 from zero.",
+		why: "A note is carried on an item of changes and follow, and AGP cannot carry such an integer, so no remote reader could read past the change.",
+		fix: "Write the number as a string, or keep it within 9007199254740991 of zero.",
+	},
 	"position-moved": {
 		what: "The store's position is not the one the change expected.",
 		why: "Another change landed after the position the change names.",

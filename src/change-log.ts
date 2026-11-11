@@ -9,7 +9,7 @@
  * makes its entity the entity's state, a delete removes the entity and frees its name, each change makes its
  * write identity name it, and every time advances the store's time (EM8).
  */
-import { nestingDepth, toCanonicalJson, utf8ByteLength, type JsonObject, type JsonValue } from "@apnex/shape-check";
+import { firstUnsafeInteger, nestingDepth, toCanonicalJson, utf8ByteLength, type JsonObject, type JsonValue } from "@apnex/shape-check";
 import type { BaseRecord, ChangeItem, ChangeRecord, DeletedItem, EntityEnvelope, LoadedRecord, LogRecord, WriteAnswer } from "./store-types.js";
 
 /** The bounds of a change's note (D4, D5): at most 16 levels and 524288 bytes of canonical UTF-8 JSON. */
@@ -350,14 +350,15 @@ function checkAnswer(value: unknown): Check {
 	return checkEnvelope(value.entity, `${where}.entity`);
 }
 
-// A change's note, when its record holds one (D4, D5): within its depth and its size in canonical UTF-8 JSON. It
-// is plain JSON already, as every record is read as plain data.
+// A change's note, when its record holds one (D4, D5): within its depth and its size in canonical UTF-8 JSON, and
+// holding no integer more than 9007199254740991 from zero. It is plain JSON already, as every record is read as plain data.
 function checkNote(note: JsonValue): Check {
 	const depth = nestingDepth(note);
 	if (depth > NOTE_LIMITS.depth) return `the change's note nests ${depth} levels, more than ${NOTE_LIMITS.depth}`;
 	const bytes = utf8ByteLength(toCanonicalJson(note));
 	if (bytes > NOTE_LIMITS.bytes) return `the change's note is ${bytes} bytes of canonical JSON, more than ${NOTE_LIMITS.bytes}`;
-	return undefined;
+	const unsafe = firstUnsafeInteger(note);
+	return unsafe === null ? undefined : `the change's note holds an integer more than 9007199254740991 from zero at ${JSON.stringify(unsafe.pointer)}`;
 }
 
 const CHANGE_FIELDS = ["type", "position", "at", "writer", "writeId", "digest", "answer", "writes"] as const;

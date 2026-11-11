@@ -98,6 +98,25 @@ test("a note of exactly 524,288 bytes of canonical UTF-8 JSON and 16 levels land
 	assert.equal(store.read({ target: { kind: "note", name: "gamma" } }).answer.entity, null);
 });
 
+test("a note holding an integer more than 9007199254740991 from zero, however deep, is refused as note-unsafe-number naming where, as an entity's body is, since AGP could not carry the changes and follow items holding it", () => {
+	const { store, storage } = openLocal();
+	const deep = (value) => ({ a: [{ b: [0, { c: nest(10), d: value }] }] });
+	const accepted = [2 ** 53 - 1, -(2 ** 53 - 1)];
+	for (const [i, value] of accepted.entries()) {
+		const out = store.change({ writes: [create(note(`safe-${i}`))], note: deep(value) }, W("a", `safe-${i}`));
+		assert.equal(out.outcome, "answered", `${value} is carried`);
+	}
+	const before = storage.records();
+	for (const [i, value] of [2 ** 53, -(2 ** 53), 2 ** 60, 1e300].entries()) {
+		const refusal = refusedWith(store.change({ writes: [create(note(`unsafe-${i}`))], note: deep(value) }, W("a", `unsafe-${i}`)), "note-unsafe-number");
+		assert.deepEqual(refusal.details, { pointer: "/a/0/b/1/d" }, `${value}`);
+	}
+	refusedWith(store.change({ writes: [create(note("top"))], note: 2 ** 53 }, W("a", "top")), "note-unsafe-number");
+	assert.deepEqual(storage.records(), before, "nothing was appended");
+	assert.equal(store.read({ target: { kind: "note", name: "unsafe-0" } }).answer.entity, null, "the whole change was refused");
+	assert.equal(refusedWith(store.change({ writes: [create(note("big"))], note: ["x".repeat(524_288), 2 ** 53] }, W("a", "order")), "note-too-large").code, "note-too-large", "the bounds come first");
+});
+
 test("a note that is not plain JSON is refused as note-not-plain, running none of its code, observing any promise it holds, and appending nothing; it is decided before the write identity", async () => {
 	const { store, storage } = openLocal();
 	store.change({ writes: [create(note("alpha"))] }, W("a", "used"));
@@ -238,7 +257,8 @@ test("a change log whose change record holds a note beyond either bound stops th
 	};
 	assert.equal(opening(nest(16)).opened, true);
 	assert.equal(opening("x".repeat(524_286)).opened, true);
-	for (const [label, value] of [["17 levels", nest(17)], ["524,289 bytes", "x".repeat(524_287)]]) {
+	assert.equal(opening({ n: 2 ** 53 - 1 }).opened, true);
+	for (const [label, value] of [["17 levels", nest(17)], ["524,289 bytes", "x".repeat(524_287)], ["an unsafe integer", { n: [2 ** 53] }]]) {
 		const bad = opening(value);
 		assert.equal(bad.opened, false, label);
 		assert.equal(bad.refusal.code, "log-corrupt", label);

@@ -68,7 +68,9 @@ The resulting change record is at most 8,388,608 bytes (8 MiB) of canonical JSON
 The change takes exactly one position; an entity it creates takes the identity `e<position>.<place>`, `place` its write's place in the change, counting from 1; each entity's revision moves as a single write would move it.\
 Repeat recognition covers the whole change: the digest is of the whole request, and a repeat answers with the first answer; `checkRepeat("change", input, write)` asks it without making the change.\
 Its answer is a third `WriteAnswer` variant, `{ position, writes }`, `writes` holding, in the order the writes were given, `{ entity }` for a create or an update and `{ deleted }` for a delete, each as the single operation would answer it.\
-`changes` and `follow` give one item for each write of the change, as they do today.
+`changes` and `follow` give one item for each write of the change, as they do today.\
+A page of `changes` or `follow` holding a change can be far larger than its record, because each delete's item repeats the change's writer, which the record holds once: the page's bound is the writer's length times 2,000, not the record's 8 MiB.\
+Measured at build, 2,000 deletes under a writer of 1,024 control characters, each written as six bytes, make a record of 249,033 bytes and a page of 12,541,824; the independent check of this build put the worst case at about 16.55 MB, within the 16 MiB a carrier admits by about 1.4%.
 
 **The expected position (extends `expected-revision-write` and `store-refusal`).**\
 A change, of one write or many, may name `expectedPosition`, the store position its writer last saw.\
@@ -78,18 +80,20 @@ Repeat recognition is decided first, so a repeat of a change that landed answers
 **The note on a change (extends `change-provenance` and `storage-port`).**\
 A change, of one write or many, may carry a `note`: a value the application names and the store never interprets.\
 It is read as plain JSON through `shape-check`'s `readPlainJson`, nests at most 16 levels, and is at most 524,288 bytes (512 KiB) of canonical UTF-8 JSON; a note beyond either bound is refused, and the whole change with it.\
+A note holding an integer more than 9007199254740991 from zero is refused as `note-unsafe-number`, naming where, as an entity's body is refused as `unsafe-number`, since AGP could not carry the items of `changes` and `follow` holding it.\
 A note that is not plain JSON is refused as `note-not-plain`, before the write identity is checked, since it gives no request to recognise; a note given as `undefined` is no note.\
 When present, the note is kept in the change record in canonical form, after the record's other fields, included in the change's digest, and forgotten with the change when the history bound passes it; an archive the application configures keeps the evicted record whole.\
 When absent, the change record has no `note` field, so every log and archive written before the note existed reads unchanged, with the same fields and the same digests.\
 `changes` and `follow` carry a change's note once, on the first of that change's items in each answer, never repeated on each write's item.
 
 **The order of a change's refusals.**\
-`note-not-plain`; then `identity-reused` and `writer-too-long`, as for every write; then `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large` and `position-moved`; then each write in order, with the refusals its single operation gives in their order and `duplicate-target` after `empty-update`; and last `change-too-large`, on the record the change would append.\
+`note-not-plain`; then `identity-reused` and `writer-too-long`, as for every write; then `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large`, `note-unsafe-number` and `position-moved`; then each write in order, with the refusals its single operation gives in their order and `duplicate-target` after `empty-update`; and last `change-too-large`, on the record the change would append.\
 A change's input that does not fit its shape, or a write's input that does not fit its operation's, is a programming error, thrown as a `TypeError` naming the field, as for every operation.
 
 **Carried by `entity-api`.**\
-`entity-api` (`C6`) carries `change`, `expectedPosition` and the note to its clients when it adds them, under its own ruling; until then they are served only to an application embedding the store.\
-The shared contract suite, which `entity-api` runs remotely, therefore holds no case of them; they are this component's own tests.\
+`entity-api` (`C6`) carries `change` and `expectedPosition` to its clients when it adds them, under its own ruling; until then they are served only to an application embedding the store.\
+A note reaches remote readers sooner: `entity-api` serves `changes` and `follow`, whose items carry it, so once it runs this component's `0.2.0` every remote reader is given the notes an embedding application wrote, which is why a note holds nothing AGP cannot carry.\
+The shared contract suite, which `entity-api` runs remotely, holds no case of `change`; the three extensions are this component's own tests.\
 A log holding a record that `change` wrote, with a note or without, is not readable by `0.1.0`, which refuses it as `log-corrupt`.
 
 ---

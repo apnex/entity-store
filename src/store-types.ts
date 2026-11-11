@@ -204,7 +204,8 @@ export type WriteAnswer = EntityAnswer | DeleteAnswer | ChangeAnswer;
 /**
  * The codes entity-store refuses a write or read with (EM9), in the order it checks them. A `change` checks
  * `note-not-plain` first, since a note that is not plain JSON gives no request to recognise; then the identity and
- * the writer; then `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large` and `position-moved`; then
+ * the writer; then `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large`, `note-unsafe-number` and
+ * `position-moved`; then
  * each write in order as its single operation checks it, with `duplicate-target` after `empty-update`, a refusal of a
  * write naming its `index`; and `change-too-large` last, on the record the change would append (D4, D5).
  */
@@ -216,6 +217,7 @@ export type StoreRefusalCode =
 	| "too-many-writes"
 	| "note-too-deep"
 	| "note-too-large"
+	| "note-unsafe-number"
 	| "position-moved"
 	| "unknown-kind"
 	| "invalid-position"
