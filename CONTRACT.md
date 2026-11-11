@@ -53,11 +53,46 @@ When independent actors write the same store, the system holding it is also mult
 
 ---
 
+## Designed, not yet built
+
+Three extensions of the capabilities above, designed under `D4` and not yet served by the package.\
+Each extends a row already in the table rather than adding one, so the rows, `export-map.json` and the shared suite stay as they are until the extension is built and tested, and then state what is served.\
+Until then no operation, option or field named below exists, and no consumer may depend on it.
+
+**The many-item `change` (extends `positioned-entity-write`, `repeat-recognition` and `store-refusal`).**\
+`positioned-entity-write` already promises a change of one or more writes taking one position (zorg's `D33`); `change` is the operation that serves a change of more than one.\
+It takes 1 to 2,000 writes, each a create, an update or a delete in the form the single operation takes, with one `writer` and one `writeId` for the whole change.\
+No two writes may target one entity, by identity or by kind and name, names judged as the change would leave them.\
+Each write is judged as its single operation judges it - its kind's shape, its name, its expected revision - against the state the writes before it in the change leave; one refusal refuses the whole change, naming the index of the write that led there, and nothing is applied.\
+The resulting change record is at most 8,388,608 bytes (8 MiB) of canonical JSON, so a page of `changes` or `follow` holding it stays within what a carrier of 16 MiB admits.\
+The change takes exactly one position; an entity it creates takes the identity `e<position>.<place>`, `place` its write's place in the change, counting from 1; each entity's revision moves as a single write would move it.\
+Repeat recognition covers the whole change: the digest is of the whole request, and a repeat answers with the first answer.\
+Its answer is a third `WriteAnswer` variant, `{ position, writes }`, `writes` holding, in the order the writes were given, `{ entity }` for a create or an update and `{ deleted }` for a delete, each as the single operation would answer it.\
+`changes` and `follow` give one item for each write of the change, as they do today.
+
+**The expected position (extends `expected-revision-write` and `store-refusal`).**\
+A change, of one write or many, may name `expectedPosition`, the store position its writer last saw.\
+It is refused as `position-moved`, naming the store's position, when the store's position is any other.\
+Repeat recognition is decided first, so a repeat of a change that landed answers with its first answer however far the store has moved since.
+
+**The note on a change (extends `change-provenance` and `storage-port`).**\
+A change, of one write or many, may carry a `note`: a value the application names and the store never interprets.\
+It is read as plain JSON through `shape-check`'s `readPlainJson`, nests at most 16 levels, and is at most 524,288 bytes (512 KiB) of canonical UTF-8 JSON; a note beyond either bound is refused, and the whole change with it.\
+When present, the note is kept in the change record in canonical form, included in the change's digest, and forgotten with the change when the history bound passes it.\
+When absent, the change record has no `note` field, so every log and archive written before the note existed reads unchanged, with the same fields and the same digests.\
+`changes` and `follow` carry a change's note once, on the first of that change's items in each answer, never repeated on each write's item.
+
+**Carried by `entity-api`.**\
+`entity-api` (`C6`) carries `change`, `expectedPosition` and the note to its clients when it adds them, under its own ruling; until then they are served only to an application embedding the store.
+
+---
+
 ## Reference
 
 This repository, `apnex/entity-store`, and its package `@apnex/entity-store`, released only by its own CI as a tarball attached to a GitHub release, drafted, verified and then published (`.github/workflows/release.yml`).\
 The package `@apnex/entity-store` exports `openEntityStore` and `createMemoryStoragePort` (implementing `compact(records)` alongside `load` and `append`), `@apnex/entity-store/file-storage` exports `createFileStoragePort` (accepting `options?: {archiveFile?: string}`, rotating evicted `change` records to `archiveFile` when given, validating `archiveFile` from its `64`-byte header and a backwards-doubling tail read starting at `64` KiB against `base`'s `position`, `at` and `digest`, and replacing `file` atomically via `${file}.compact`) and `LOG_HEADER`, and `@apnex/entity-store/contract-suite` exports `registerEntityStoreSuite` and `contractSuiteRows`, the shared contract suite, as `export-map.json` records.\
 `changes-since-position` is served through `openEntityStore` as `changes`, and `follow-narrowed-set` as `follow` and `waitForChange`, each carried by the shared contract suite, built in zorg's Delta 4 under `D64` (zorg's target, `EM16` and `EM17`); the suite's cases of `follow` judge the items and `through` across pages and keep within the input shape entity-api serves `follow` under, so entity-api runs them remotely, and the exact pages, inputs beyond that shape, programming errors and `waitForChange` are this component's own tests.\
+The many-item `change`, the expected position and the note on a change are designed under `D4` and not yet served (*Designed, not yet built*).\
 It depends on `@apnex/shape-check` through a `file:` link, and only its file storage port, `src/file-storage-adapter.ts`, imports a module particular to one runtime.
 
 ---
