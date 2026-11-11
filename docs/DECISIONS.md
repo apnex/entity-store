@@ -57,14 +57,14 @@ Draw takes components as public GitHub release files pinned by hash and runs Nod
 
 ## D4 - A change of many writes, an expected position, and a note on a change
 
-**Ruled by:** not yet ruled; drafted by drawv2 under its `H31-8`, with the limits and log compatibility zorg set (zorg's planning reply to drawv2, answers 1 and 2), for the director's ruling and zorg's co-signature.\
+**Ruled by:** the director, 2026-11-11, drafted by drawv2 under its `H31-8` and co-signed by zorg (`zorg/docs/DECISIONS.md` `D76`).\
 **Affects:** `CONTRACT.md` (*Designed, not yet built*, and a sentence in *Reference*); nothing in `src/`, `export-map.json` or the shared suite, and nothing the component does until it is built.
 
 **Ruling.**\
 Three extensions are designed, each extending a capability already in the contract:
 1. **The many-item `change`**, serving the change of more than one write that `positioned-entity-write` promises (zorg's `D33`): 1 to 2,000 writes, no two to one entity, the resulting change record at most 8 MiB of canonical JSON, all or nothing at one position, repeat recognition over the whole change, and a third `WriteAnswer` variant, `{ position, writes }`.
 2. **`expectedPosition`** on a change, refused as `position-moved` when the store's position is any other, decided after repeat recognition.
-3. **An optional `note`** on a change: plain JSON read through `shape-check`'s `readPlainJson`, nesting at most 16 levels, at most a byte limit settled between 64 KiB and 512 KiB before it is built; kept and digested when present, forgotten with its change, carried once per change in `changes` and `follow`; and absent from the record when not given, so every stored log and archive reads unchanged.
+3. **An optional `note`** on a change: plain JSON read through `shape-check`'s `readPlainJson`, nesting at most 16 levels, at most 524,288 bytes (512 KiB) of canonical UTF-8 JSON; kept and digested when present, forgotten with its change, carried once per change in `changes` and `follow`; and absent from the record when not given, so every stored log and archive reads unchanged.
 
 `entity-api` carries them under its own ruling, at the move that puts a consumer's storage on this component, or earlier.\
 Until each is built and tested, the contract lists it under *Designed, not yet built*, and no export or suite case claims it.

@@ -77,7 +77,7 @@ Repeat recognition is decided first, so a repeat of a change that landed answers
 
 **The note on a change (extends `change-provenance` and `storage-port`).**\
 A change, of one write or many, may carry a `note`: a value the application names and the store never interprets.\
-It is read as plain JSON through `shape-check`'s `readPlainJson`, nests at most 16 levels, and is at most a byte limit of canonical UTF-8 JSON that is to be settled between 65,536 (64 KiB) and 524,288 (512 KiB) before the extension is built; a note beyond either bound is refused, and the whole change with it.\
+It is read as plain JSON through `shape-check`'s `readPlainJson`, nests at most 16 levels, and is at most 524,288 bytes (512 KiB) of canonical UTF-8 JSON; a note beyond either bound is refused, and the whole change with it.\
 When present, the note is kept in the change record in canonical form, included in the change's digest, and forgotten with the change when the history bound passes it.\
 When absent, the change record has no `note` field, so every log and archive written before the note existed reads unchanged, with the same fields and the same digests.\
 `changes` and `follow` carry a change's note once, on the first of that change's items in each answer, never repeated on each write's item.
