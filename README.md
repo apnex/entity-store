@@ -9,7 +9,7 @@ Its contract tests run its shared contract suite against a store in this process
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
 - `docs/DECISIONS.md` - the rulings about this component.
 
-It belongs to a component set first composed by zorg (`apnex/zorg`), and is released only by its own CI, as a tarball attached to a GitHub release with its SHA-512 beside it, which a consumer names in its `package.json`: `https://github.com/apnex/entity-store/releases/download/v0.1.0/apnex-entity-store-0.1.0.tgz` for `0.1.0`.
+It belongs to a component set first composed by zorg (`apnex/zorg`), and is released only by its own CI, as a tarball attached to a GitHub release with its SHA-512 beside it, which a consumer names in its `package.json`: `https://github.com/apnex/entity-store/releases/download/v0.2.0/apnex-entity-store-0.2.0.tgz` for `0.2.0`, which adds the change of many writes, the expected position and the note on a change (`docs/DECISIONS.md` `D5`).
 
 It depends on `@apnex/shape-check` through a `file:` link to a checkout beside it, which must be built first, since shape-check's `dist/` is not committed.
 

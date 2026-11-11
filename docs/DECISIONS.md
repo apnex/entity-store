@@ -77,3 +77,31 @@ The note's byte limit is settled from `drawv2`'s measurement of its undo records
 **Alternatives refuted.**\
 New capability rows deferred under this ruling - the shared suite's own row lists (`src/contract-suite.ts`) would change with them, and this draft changes no source.\
 A note on every write's item in `changes` - a change of 2,000 writes would repeat it 2,000 times in one page.
+
+---
+
+## D5 - The change of many writes, the expected position and the note built, in 0.2.0
+
+**Ruled by:** the director, 2026-11-11 (draw's `H31-9`, on the contract `D4` designs and zorg co-signed under its `D76`; zorg's answers 1 and 2 to draw's `H31-3`, in `upstream/drawv2-planning-boundaries-reply.md`, bind the limits and the log's compatibility).\
+**Affects:** `src/` (`change`, `checkRepeat("change", ...)`, the change log's third answer variant and optional `note`, the note on the first item in `changes` and `follow`), `CONTRACT.md` (the rows the extensions extend, the section that held them as designed, and *Reference*), `package.json` and its lockfile (`0.2.0`, and `0.1.0`'s release file as a development dependency), `README.md`, and new tests; nothing in `export-map.json` or the shared suite, and no existing test.
+
+**Ruling.**\
+The three extensions `D4` designs are built and released as `0.2.0`:
+1. **`change(input, write)`**, the other writes' form, `input` being `{ writes, expectedPosition?, note? }` and each write `{ operation, input }`: 1 to 2,000 writes, no two to one entity, each judged as its single operation judges it against the state the writes before it leave, the record at most 8,388,608 bytes of canonical JSON, landing whole at one position or not at all, answered `{ position, writes }`.
+2. **`expectedPosition`**, refused as `position-moved` naming the position expected and the store's, after repeat recognition.
+3. **The note**, read through `readPlainJson`, at most 16 levels and 524,288 bytes of canonical UTF-8 JSON, kept in canonical form after the record's other fields and digested with the request, absent from the record when not given, carried once on the first of a change's items in `changes` and `follow`, forgotten with its change.
+
+**Choices made at build.**
+- New refusal codes in the shared form: `note-not-plain`, `empty-change`, `too-many-writes`, `note-too-deep`, `note-too-large`, `position-moved`, `duplicate-target` and `change-too-large`; a refusal of one write names its `index`, counting from 0, beside its single operation's details, and `duplicate-target` names the earlier write's index and the entity.
+- `note-not-plain` is a refusal, not a thrown error, and comes before the write identity, since a note that is not plain JSON gives no request whose digest could be recognised.
+- The single operations are unchanged, input, answer and record; a change of one write with an expected position or a note is made through `change`.
+- Two writes target one entity when the identity a target names, resolved against the names the writes before it leave, is one an earlier write wrote; a delete followed by a create of the same name writes two entities, and is accepted.
+- The shared suite carries no case of `change`, since `entity-api`, which runs it remotely, does not carry `change` (`D4`); the component's own tests hold the extensions, and `0.1.0`'s release file, pinned by the integrity its SHA-512 asset states, is a development dependency, so the tests compare the logs and archives the two write.
+
+**Why.**\
+The log compatibility zorg's answer 2 requires is shown, not asserted: the same writes through the single operations write a log and archive byte-identical to `0.1.0`'s, step by step across reopening, compaction and archiving; a log and archive `0.1.0` wrote open under `0.2.0` without a byte touched, every write it recorded recognised by its digest.\
+A log holding a record `change` wrote is refused by `0.1.0` as `log-corrupt`, so a store goes back to `0.1.0` only from a log no `change` has written to.
+
+**Alternatives refuted.**\
+`change(writes, options)` with the writer and write identity in `options` - every other write takes `(input, write)`, and `entity-api` declares one input shape for each operation, its host naming the writer and the identity.\
+The count of writes in the input shape, thrown when beyond it - every other limit a write meets is a refusal in the shared form, as `too-many-tags` and `writer-too-long` are.
