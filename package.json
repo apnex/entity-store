@@ -41,6 +41,7 @@
     "@apnex/shape-check": "https://github.com/apnex/shape-check/releases/download/v0.1.0/apnex-shape-check-0.1.0.tgz"
   },
   "devDependencies": {
+    "@apnex/entity-store-0.1.0": "https://github.com/apnex/entity-store/releases/download/v0.1.0/apnex-entity-store-0.1.0.tgz",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
   }
